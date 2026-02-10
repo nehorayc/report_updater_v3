@@ -1,0 +1,14 @@
+# Local environment
+.env
+.tmp/
+__pycache__/
+*.pyc
+
+# Google OAuth
+credentials.json
+token.json
+
+# Virtual environment
+.venv/
+env/
+venv/
