@@ -2094,3 +2094,208 @@ Please retry in 15.892986533s. [links {
 2026-02-10 08:36:30,527 - DocBuilder - DEBUG - Mapped visual: 25910a1a -> image (Path: .tmp/assets\asset_25910a1a31c5bcd396e3aef9c2577259.png)
 2026-02-10 08:36:30,527 - DocBuilder - DEBUG - Mapped visual: 6fa89cd5 -> Graph (Path: .tmp/visuals\search_7eb16c7b795147ebba634ae42ff50c88.png)
 2026-02-10 08:36:30,527 - DocBuilder - DEBUG - Mapped visual: 6c0093d0 -> Search-based Image (Path: None)
+2026-02-10 08:39:03,187 - StreamlitApp - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-02-10 08:39:03,273 - PDFParser - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-02-10 08:39:03,349 - DocxParser - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-02-10 08:39:03,663 - VisionService - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-02-10 08:39:03,664 - Translator - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-02-10 08:39:03,664 - ChapterAnalyzer - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-02-10 08:39:03,664 - StreamlitApp - INFO - New session started.
+2026-02-10 08:39:03,675 - ResearchAgent - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-02-10 08:39:03,677 - WriterAgent - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-02-10 08:39:03,997 - GraphGenerator - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-02-10 08:39:04,003 - ImageSearch - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-02-10 08:39:04,007 - DocBuilder - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-02-10 08:39:04,007 - StreamlitApp - DEBUG - Rendering main page - Current State: UPLOAD_AND_EXTRACT
+2026-02-10 08:39:07,683 - StreamlitApp - DEBUG - Rendering main page - Current State: UPLOAD_AND_EXTRACT
+2026-02-10 08:39:09,784 - StreamlitApp - DEBUG - Rendering main page - Current State: UPLOAD_AND_EXTRACT
+2026-02-10 08:39:09,787 - StreamlitApp - INFO - User clicked 'Process Document' for file: רובוטיקה הומנואידית תמונת מצב 2025-2.pdf
+2026-02-10 08:39:09,787 - PDFParser - INFO - Starting PDF extraction for: .tmp\רובוטיקה הומנואידית תמונת מצב 2025-2.pdf
+2026-02-10 08:39:09,890 - PDFParser - INFO - Average font size estimated: 11.73
+2026-02-10 08:39:09,963 - PDFParser - INFO - Text extraction complete. Found 1 chapters in 0.18s.
+2026-02-10 08:39:09,987 - PDFParser - INFO - Asset extraction complete. Found 20 distinct assets in 0.02s.
+2026-02-10 08:39:09,989 - ChapterAnalyzer - INFO - Starting analysis for chapter: 'Introduction' (Length: 30155)
+2026-02-10 08:39:26,301 - ChapterAnalyzer - INFO - Chapter analysis complete in 16.31s
+2026-02-10 08:39:26,303 - StreamlitApp - INFO - Extraction & Analysis complete. Chapters: 1, Assets: 20
+2026-02-10 08:39:26,367 - StreamlitApp - DEBUG - Rendering main page - Current State: ASSET_SELECTION
+2026-02-10 08:39:32,172 - StreamlitApp - DEBUG - Rendering main page - Current State: ASSET_SELECTION
+2026-02-10 08:39:32,253 - StreamlitApp - DEBUG - Rendering main page - Current State: ASSET_SELECTION
+2026-02-10 08:39:34,322 - StreamlitApp - DEBUG - Rendering main page - Current State: ASSET_SELECTION
+2026-02-10 08:39:34,346 - StreamlitApp - INFO - User confirmed asset selection. Count: 1
+2026-02-10 08:39:34,410 - StreamlitApp - INFO - Triggering analyze_batch_assets for 1 assets.
+2026-02-10 08:39:34,411 - VisionService - INFO - Starting batch analysis for 1 assets.
+2026-02-10 08:39:34,411 - VisionService - INFO - Processing chunk 1 (1 images).
+2026-02-10 08:39:34,411 - VisionService - DEBUG - Sending request to Gemini for chunk 1...
+2026-02-10 08:39:40,920 - VisionService - INFO - Gemini response received for chunk 1 in 6.51s.
+2026-02-10 08:39:40,920 - VisionService - DEBUG - Raw response: ```json
+[
+  {
+    "id": "25910a1a31c5bcd396e3aef9c2577259_Exhibit42",
+    "type": "chart",
+    "short_caption": "Exhibit 42 shows a significant increase in public company documents and transcripts men...
+2026-02-10 08:39:40,920 - VisionService - INFO - Successfully parsed 2 results from chunk.
+2026-02-10 08:39:40,920 - VisionService - INFO - Batch analysis complete. Total results: 2
+2026-02-10 08:39:40,920 - StreamlitApp - INFO - Vision analysis complete in 6.51s. Results count: 2
+2026-02-10 08:39:40,921 - StreamlitApp - INFO - Removed markers for 19 unselected assets from chapters.
+2026-02-10 08:39:40,974 - StreamlitApp - INFO - Transitioning to STATE_RESEARCH_PLANNING.
+2026-02-10 08:39:41,034 - StreamlitApp - DEBUG - Rendering main page - Current State: RESEARCH_PLANNING
+2026-02-10 08:39:49,713 - StreamlitApp - DEBUG - Rendering main page - Current State: RESEARCH_PLANNING
+2026-02-10 08:39:49,825 - StreamlitApp - DEBUG - Rendering main page - Current State: RESEARCH_PLANNING
+2026-02-10 08:39:49,894 - StreamlitApp - DEBUG - Rendering main page - Current State: DRAFT_GENERATION
+2026-02-10 08:39:49,895 - ResearchAgent - INFO - Orchestrating comprehensive research for topic: 'Introduction'
+2026-02-10 08:39:49,895 - ResearchAgent - INFO - Performing web search for: 'Humanoid Robotics Global Update 2024-2025' (max_results=5)
+2026-02-10 08:39:50,776 - ResearchAgent - INFO - Web search complete. Found 0 results in 0.88s.
+2026-02-10 08:39:50,778 - ResearchAgent - INFO - Retrying with broader query: Humanoid Robotics
+2026-02-10 08:39:50,778 - ResearchAgent - INFO - Performing web search for: 'Humanoid Robotics' (max_results=3)
+2026-02-10 08:39:51,190 - ResearchAgent - INFO - Web search complete. Found 0 results in 0.41s.
+2026-02-10 08:39:51,190 - ResearchAgent - INFO - Performing web search for: 'AI Foundation Models Robotics' (max_results=5)
+2026-02-10 08:39:51,585 - ResearchAgent - INFO - Web search complete. Found 0 results in 0.39s.
+2026-02-10 08:39:51,585 - ResearchAgent - INFO - Retrying with broader query: AI Foundation
+2026-02-10 08:39:51,585 - ResearchAgent - INFO - Performing web search for: 'AI Foundation' (max_results=3)
+2026-02-10 08:39:51,994 - ResearchAgent - INFO - Web search complete. Found 3 results in 0.41s.
+2026-02-10 08:39:51,994 - ResearchAgent - INFO - Performing web search for: 'Autonomous Humanoid Robot Development' (max_results=5)
+2026-02-10 08:39:52,535 - ResearchAgent - INFO - Web search complete. Found 0 results in 0.54s.
+2026-02-10 08:39:52,535 - ResearchAgent - INFO - Retrying with broader query: Autonomous Humanoid
+2026-02-10 08:39:52,535 - ResearchAgent - INFO - Performing web search for: 'Autonomous Humanoid' (max_results=3)
+2026-02-10 08:39:53,016 - ResearchAgent - INFO - Web search complete. Found 0 results in 0.48s.
+2026-02-10 08:39:53,016 - ResearchAgent - INFO - Performing web search for: 'Tech Giants Humanoid Robotics Entry' (max_results=5)
+2026-02-10 08:39:53,419 - ResearchAgent - INFO - Web search complete. Found 0 results in 0.40s.
+2026-02-10 08:39:53,419 - ResearchAgent - INFO - Retrying with broader query: Tech Giants
+2026-02-10 08:39:53,420 - ResearchAgent - INFO - Performing web search for: 'Tech Giants' (max_results=3)
+2026-02-10 08:39:53,881 - ResearchAgent - INFO - Web search complete. Found 0 results in 0.46s.
+2026-02-10 08:39:53,881 - ResearchAgent - INFO - Comprehensive research complete. Total findings: 3
+2026-02-10 08:39:53,881 - WriterAgent - INFO - Starting chapter generation for topic: Introduction (Target: 4900 words)
+2026-02-10 08:39:53,882 - WriterAgent - DEBUG - Prompt sent to Gemini (truncated): 
+    Original Report Chapter Text:
+    ---
+    This report provides an update, as of April 2024, on significant global advancements in humanoid robotics, covering developments since July 2024 and extending into early 2025. It positions humanoids as a crucial 'force multiplier' across industry, services, and households, driven by their multi-tasking capabilities and ease of integration into human environments. The core driver of recent progress is the rapid evolution of AI, which is making the ma...
+2026-02-10 08:40:24,889 - WriterAgent - INFO - Gemini response received in 31.01s.
+2026-02-10 08:40:24,889 - WriterAgent - DEBUG - FULL Gemini Response:
+{
+  "text_content": "# The Dawn of Autonomous Humanoids: A Strategic Overview (2024-2026)\n\nThis chapter provides a comprehensive update on the significant global advancements in humanoid robotics, focusing on the period from late 2023 through to the projected developments in early 2026. The landscape of robotics has transformed dramatically, driven by an unparalleled acceleration in artificial intelligence capabilities, positioning humanoids as a pivotal force multiplier across diverse sectors, including industry, sophisticated service environments, and emerging household applications. The intrinsic value of humanoids lies in their remarkable multi-tasking capabilities and their inherent design for seamless integration into human-centric environments, fostering a future where human-robot collaboration is not just efficient but intuitive [Source: Original Report].\n\nThe fundamental catalyst for the rapid progress observed in humanoid robotics is the exponential evolution of Artificial Intelligence (AI) [Source: Original Report]. AI, defined as the study, development, and application of theories, methods, techniques, and systems that simulate, extend, and expand human intelligence [Source: Zhihu - Definition of AI], has reached a maturity level that is making the mass production of intelligent humanoids technologically feasible. This feasibility is not merely theoretical; it is actively fueling intense global competition among leading technological nations, notably the United States and China, and driving unprecedented investment from both public and private sectors. The strategic implications of this technological race are profound, extending beyond economic dominance to encompass national security and societal welfare.\n\n## The AI Revolution: Enabling Next-Generation Humanoids\n\nOver the past two years, and particularly within the most recent nine-month period extending into early 2025, the advancements in humanoid capabilities have been both consistent and groundbreaking [Source: Original Report]. This progress is evident in a continuous stream of new model launches, significant enhancements to flagship projects, and an escalating trend of technological convergence. The broader AI ecosystem has seen the rise of powerful general-purpose AI models such as ChatGPT, Notion AI, and Claude [Source: Zhihu - Mainstream AI], which, while not exclusively designed for robotics, have demonstrated the transformative potential of large language models and advanced reasoning architectures. These general advancements in AI contribute to a richer research environment and often provide foundational insights that can be adapted for specialized robotic applications.\n\nCrucially, the driving force behind the enhanced autonomy of humanoids is the impressive progress in integrating highly specialized AI models directly into robotic platforms [Source: Original Report]. This integration is multifaceted, encompassing sophisticated perception systems, advanced decision-making algorithms, and precise motor control mechanisms. The development of large, specialized AI models tailored explicitly for robotics has been a game-changer, moving beyond mere programmed responses to enable genuine adaptive and autonomous behavior in complex, unstructured environments.\n\n### Key Contributors to AI-Driven Autonomy:\n\nLeading technology companies and innovative startups are at the forefront of this AI-driven transformation:\n\n*   **Nvidia's Pioneering Contributions:** Nvidia has made notable and foundational contributions to the field, recognizing the critical need for robust computational infrastructure and advanced AI models for robotics [Source: Original Report]. Their initiatives include:\n    *   **'World Foundation Models' (Cosmos):** These represent a significant leap towards developing a universal understanding framework for robots, enabling them to comprehend and interact with the physical world in a more generalized and intelligent manner. Such models aim to provide a broad base of knowledge that can be fine-tuned for specific robotic tasks, reducing the need for extensive, task-specific training data.\n    *   **GR00T N1 Humanoid Foundation Model:** Specifically designed for humanoid platforms, GR00T N1 exemplifies the trend towards specialized AI models that can manage the intricate dynamics of bipedal locomotion, manipulation, and human-robot interaction with unprecedented sophistication.\n    *   **Jetson Thor AI Chip:** This powerful AI chip provides the necessary edge computing capabilities, allowing humanoids to process complex sensor data and execute AI models locally in real-time. This is critical for enabling responsive, safe, and truly autonomous operation without constant reliance on cloud connectivity.\n\n*   **Figure's Language-to-Action Paradigm:** Figure AI, a prominent innovator in the humanoid space, has developed its **Helix VLA model**, which represents a significant stride in human-robot communication and task execution [Source: Original Report]. The Helix VLA model enables "language-to-action" capabilities, allowing humanoids to understand and execute complex commands given in natural language, translating abstract instructions into precise physical movements. Furthermore, its support for "multi-robot collaboration" is crucial for scaling robotic deployments, enabling teams of humanoids to coordinate efforts on intricate tasks, thereby enhancing efficiency and versatility across industrial and logistical applications.\n\n*   **UNITREE's Adaptive Motion Optimization:** UNITREE Robotics, known for its agile quadruped and humanoid robots, has introduced the **AMO model**, which focuses on "adaptive motion optimization" [Source: Original Report]. This model significantly enhances the physical agility and robustness of humanoids by allowing them to dynamically adjust their movements to changing terrains and unexpected disturbances. A core component of AMO is its utilization of "sim-to-real reinforcement learning," where AI models are trained extensively in highly realistic simulation environments and then seamlessly transferred to physical robots. This methodology accelerates the learning process, reduces development costs, and improves the real-world performance and safety of autonomous humanoids.\n\n## Market Dynamics and Strategic Investments\n\nThe past two years have witnessed the definitive entry of major global tech giants into the humanoid robotics market, signaling a profound shift in strategic focus and investment [Source: Original Report]. Companies such as Meta, Toyota, Samsung, Huawei, and Google have either launched dedicated robotics initiatives, made significant investments, or, in the case of Apple, are actively exploring the potential of this sector. Their involvement brings not only substantial capital but also decades of expertise in AI, manufacturing, supply chain management, and consumer electronics, which are invaluable for the maturation of the humanoid robotics industry.\n\nThis influx of major players has catalyzed significant investments across the entire value chain, from fundamental AI research to advanced materials and specialized manufacturing processes. A key indicator of market readiness and maturity is the commencement of **serial production** for leading humanoid models [Source: Original Report]. This transition from prototype development to scaled manufacturing signifies a critical inflection point, promising eventual cost reductions, increased accessibility, and broader deployment of these advanced machines. Early examples of commercial deployment are beginning to emerge in sectors such as logistics, manufacturing assistance, and even limited service roles, highlighting the accelerating pace of practical integration.\n\n### The Role of Cloud AI and 5G Connectivity\n\nBeyond on-robot processing, the broader AI infrastructure plays an indispensable role in enabling advanced humanoid autonomy. AI algorithms are increasingly deployed in cloud environments, providing flexible and scalable computational support for complex tasks that may exceed the real-time processing capabilities of on-board hardware [Source: Zhihu - AI Application Scenarios]. This cloud integration allows for centralized learning, model updates, and coordination among large fleets of robots. Furthermore, the advent of 5G communication is a critical enabler for this flexible AI compute, providing the low-latency, high-bandwidth connectivity necessary for robots to access cloud-based AI resources in real-time, thereby extending their intelligence and operational capabilities across diverse environments [Source: Zhihu - AI Application Scenarios]. This symbiotic relationship between edge AI, cloud AI, and advanced connectivity is foundational for achieving widespread and robust humanoid autonomy.\n\n## Outlook and Persistent Uncertainties (2025-2026)\n\nDespite the rapid advancements and growing public interest in humanoid robotics, uncertainty persists regarding the exact timeline for a full "breakthrough" in AI for complete humanoid autonomy and their widespread adoption and impact across all facets of life [Source: Original Report]. While significant strides have been made in controlled environments and for specific tasks, achieving truly generalized autonomy in dynamic, unpredictable real-world settings remains a formidable challenge. Factors contributing to this uncertainty include the complexity of human-level dexterity, the need for robust ethical frameworks, regulatory considerations, and the critical aspect of public acceptance and trust.\n\nLooking towards early 2026, the industry is poised for continued incremental improvements in critical areas such as:\n\n*   **Enhanced Dexterity and Manipulation:** Robots will likely achieve finer motor control, enabling them to handle more delicate objects and perform intricate assembly tasks.\n*   **More Robust Navigation and Perception:** Improved sensor fusion and AI models will allow humanoids to navigate more reliably in cluttered, dynamic environments, distinguishing between objects, people, and potential hazards with greater accuracy.\n*   **Advanced Human-Robot Interaction:** Natural language processing and advanced gesture recognition will facilitate more seamless and intuitive interactions between humans and robots, moving beyond simple commands to more collaborative partnerships.\n*   **Early-Stage Commercial Scalability:** As serial production gains momentum, we anticipate seeing more varied and larger-scale deployments of humanoids in specific industrial and service niches, providing valuable real-world data for further refinement.\n\nThe trajectory of humanoid robotics is undeniably steep, driven by a powerful confluence of AI innovation, strategic investment, and global competition. While the path to pervasive, fully autonomous humanoids is still evolving, the foundational technologies and the commitment from leading global entities suggest that the coming years will continue to define a transformative era in automation and human-machine coexistence.\n\n[Figure 001: Projected Global Humanoid Robotics Market Growth (2023-2028)]\n\n[Figure 002: Diagram of AI Integration in Humanoid Robotics for Autonomy]\n",
+  "visual_suggestions": [
+    {
+      "type": "Graph",
+      "title": "Projected Global Humanoid Robotics Market Growth (2023-2028)",
+      "description": "A bar chart or line graph illustrating the forecasted growth of the humanoid robotics market, segmented by application (e.g., manufacturing, logistics, healthcare, household) and region, highlighting key growth drivers and market value over the specified period. This visual would support the narrative on 'intense competition' and 'widespread adoption and impact'."
+    },
+    {
+      "type": "Search-based Image",
+      "title": "Diagram of AI Integration in Humanoid Robotics for Autonomy",
+      "description": "An infographic or conceptual diagram depicting the architectural layers of AI integration in a humanoid robot. This would include components like on-board AI processing (edge computing, e.g., Jetson Thor), cloud-based AI (e.g., specialized foundation models, reinforcement learning in simulation), sensor inputs (vision, haptics), motor outputs, and the role of high-speed connectivity (e.g., 5G) in enabling this autonomous system. This visual would clarify the technical aspects of 'AI for autonomy' and the interplay of different AI models."
+    }
+  ],
+  "references": [
+    {
+      "title": "Global Advancements in Humanoid Robotics: An Introductory Overview",
+      "url": "N/A",
+      "category": "Original"
+    },
+    {
+      "title": "目前有哪些主流的AI？",
+      "url": "https://www.zhihu.com/question/591009674",
+      "category": "Web"
+    },
+    {
+      "title": "人工智能",
+      "url": "https://www.zhihu.com/topic/19551275",
+      "category": "Web"
+    },
+    {
+      "title": "人工智能那么火~如今AI的应用场景都有哪些？",
+      "url": "https://www.zhihu.com/question/282715644",
+      "category": "Web"
+    },
+    {
+      "title": "Industry Insights: The Competitive Landscape of Humanoid Robotics",
+      "url": "N/A",
+      "category": "Web"
+    }
+  ]
+}
+2026-02-10 08:40:24,889 - WriterAgent - WARNING - JSON decode failed, attempting to repair...
+2026-02-10 08:40:24,889 - WriterAgent - ERROR - JSON repair failed.
+2026-02-10 08:40:24,889 - WriterAgent - INFO - Successfully generated chapter. Text length: 11202
+2026-02-10 08:40:27,080 - StreamlitApp - DEBUG - Rendering main page - Current State: DRAFT_GENERATION
+2026-02-10 08:40:27,154 - StreamlitApp - DEBUG - Rendering main page - Current State: DRAFT_VERIFICATION
+2026-02-10 08:40:30,422 - StreamlitApp - DEBUG - Rendering main page - Current State: DRAFT_VERIFICATION
+2026-02-10 08:40:30,481 - StreamlitApp - DEBUG - Rendering main page - Current State: FINAL_ASSEMBLY
+2026-02-10 08:40:30,538 - StreamlitApp - INFO - Using existing visual path for 25910a1a31c5bcd396e3aef9c2577259
+2026-02-10 08:40:30,539 - DocBuilder - INFO - Starting build_final_report for 1 chapters.
+2026-02-10 08:40:30,539 - DocBuilder - INFO - Initializing ReportBuilder for report: 'Modernized Industry Report'
+2026-02-10 08:40:30,546 - DocBuilder - INFO - Adding cover page with subtitle: 'Updated and Researched via AI Agent'
+2026-02-10 08:40:30,548 - DocBuilder - INFO - Adding chapter: 'Introduction' (text length: 11202)
+2026-02-10 08:40:30,550 - DocBuilder - DEBUG - Mapped visual: 25910a1a -> image (Path: .tmp/assets\asset_25910a1a31c5bcd396e3aef9c2577259.png)
+2026-02-10 08:40:30,567 - DocBuilder - INFO - Adding bibliography with 0 unique references.
+2026-02-10 08:40:30,567 - DocBuilder - INFO - Saving DOCX to: Modernized_Report_EN.docx
+2026-02-10 08:40:30,581 - DocBuilder - INFO - DOCX saved in 0.01s.
+2026-02-10 08:40:33,311 - StreamlitApp - DEBUG - Rendering main page - Current State: FINAL_ASSEMBLY
+2026-02-10 08:40:56,336 - StreamlitApp - DEBUG - Rendering main page - Current State: FINAL_ASSEMBLY
+2026-02-10 08:41:00,183 - StreamlitApp - DEBUG - Rendering main page - Current State: FINAL_ASSEMBLY
+2026-02-10 08:41:00,241 - Translator - INFO - Starting translation to Hebrew. Text length: 11202
+2026-02-10 08:41:00,242 - Translator - DEBUG - Translation prompt (truncated): 
+    You are a professional technical translator. 
+    Translate the following report chapter into Hebrew.
+    
+    CRITICAL INSTRUCTIONS:
+    1. Maintain EXACT Markdown formatting (headers, bold, lists).
+    2. DO NOT translate technical identifiers like [Figure XXXXXXXX] or [Asset: XXXXXXXX]. Leave them exactly as they are.
+    3. Maintain the professional tone of the original.
+    4. If the text contains Hebrew and it looks reversed or garbled, correct it for natural reading order in the tran...
+2026-02-10 08:41:46,564 - Translator - INFO - Translation to Hebrew complete in 46.32s.
+2026-02-10 08:41:46,564 - Translator - DEBUG - Translated text (truncated): # עליית ההומנואידים האוטונומיים: סקירה אסטרטגית (2024-2026)
+
+פרק זה מספק עדכון מקיף על ההתקדמות הגלובלית המשמעותית ברובוטיקה הומנואידית, תוך התמקדות בתקופה שבין סוף 2023 ועד ההתפתחויות הצפויות בתחילת 2026. נוף הרובוטיקה השתנה באופן דרמטי, מונע על ידי האצה חסרת תקדים ביכולות הבינה המלאכותית, הממצבת את ההומנואידים כמכפיל כוח מרכזי במגזרים מגוונים, כולל תעשייה, סביבות שירות מתוחכמות ויישומים ביתיים מתפתחים. הערך המהותי של ההומנואידים טמון ביכולות ריבוי המשימות היוצאות דופן שלהם ובעיצובם הטבוע לאינט...
+2026-02-10 08:41:46,565 - Translator - INFO - Starting translation to Hebrew. Text length: 12
+2026-02-10 08:41:46,565 - Translator - DEBUG - Translation prompt (truncated): 
+    You are a professional technical translator. 
+    Translate the following report chapter into Hebrew.
+    
+    CRITICAL INSTRUCTIONS:
+    1. Maintain EXACT Markdown formatting (headers, bold, lists).
+    2. DO NOT translate technical identifiers like [Figure XXXXXXXX] or [Asset: XXXXXXXX]. Leave them exactly as they are.
+    3. Maintain the professional tone of the original.
+    4. If the text contains Hebrew and it looks reversed or garbled, correct it for natural reading order in the tran...
+2026-02-10 08:41:47,763 - Translator - INFO - Translation to Hebrew complete in 1.20s.
+2026-02-10 08:41:47,763 - Translator - DEBUG - Translated text (truncated): ---
+מבוא
+---...
+2026-02-10 08:41:47,763 - DocBuilder - INFO - Starting build_final_report for 1 chapters.
+2026-02-10 08:41:47,763 - DocBuilder - INFO - Initializing ReportBuilder for report: 'Modernized Industry Report'
+2026-02-10 08:41:47,771 - DocBuilder - INFO - Adding cover page with subtitle: 'Updated and Researched via AI Agent'
+2026-02-10 08:41:47,772 - DocBuilder - INFO - Adding chapter: '---
+מבוא
+---' (text length: 8661)
+2026-02-10 08:41:47,773 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,773 - DocBuilder - DEBUG - Mapped visual: 25910a1a -> image (Path: .tmp/assets\asset_25910a1a31c5bcd396e3aef9c2577259.png)
+2026-02-10 08:41:47,773 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,773 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,774 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,774 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,775 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,775 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,776 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,776 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,778 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,778 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,780 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,781 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,781 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,782 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,783 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,783 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,784 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,784 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,784 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,786 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,786 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,786 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,787 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,788 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,789 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,789 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,790 - DocBuilder - DEBUG - Hebrew detected, applying RTL formatting.
+2026-02-10 08:41:47,790 - DocBuilder - INFO - Adding bibliography with 0 unique references.
+2026-02-10 08:41:47,791 - DocBuilder - INFO - Saving DOCX to: Modernized_Report_Hebrew.docx
+2026-02-10 08:41:47,802 - DocBuilder - INFO - DOCX saved in 0.01s.
+2026-02-10 08:41:52,278 - StreamlitApp - DEBUG - Rendering main page - Current State: FINAL_ASSEMBLY
