@@ -4,6 +4,9 @@ import sys
 import json
 import uuid
 from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Page Configuration
 st.set_page_config(
@@ -95,9 +98,24 @@ if st.session_state.debug_mode:
         st.session_state.current_state = state_selection
         st.rerun()
 
+@st.dialog("API Key Required")
+def ask_for_api_key():
+    st.warning("GEMINI_API_KEY is not set. Please enter your Gemini API Key to continue.")
+    api_key = st.text_input("Gemini API Key", type="password")
+    if st.button("Save"):
+        if api_key.strip():
+            os.environ["GEMINI_API_KEY"] = api_key.strip()
+            st.rerun()
+        else:
+            st.error("Please enter a valid API Key.")
+
 # --- Main Logic ---
 def main():
     st.title("Report Updater v3 (Horizon/Elisha)")
+    
+    if not os.environ.get("GEMINI_API_KEY"):
+        ask_for_api_key()
+        st.stop()
     
     current_state = st.session_state.current_state
     logger.debug(f"Rendering main page - Current State: {current_state}")
