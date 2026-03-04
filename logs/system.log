@@ -2299,3 +2299,314 @@ Please retry in 15.892986533s. [links {
 2026-02-10 08:41:47,791 - DocBuilder - INFO - Saving DOCX to: Modernized_Report_Hebrew.docx
 2026-02-10 08:41:47,802 - DocBuilder - INFO - DOCX saved in 0.01s.
 2026-02-10 08:41:52,278 - StreamlitApp - DEBUG - Rendering main page - Current State: FINAL_ASSEMBLY
+2026-03-04 10:31:48,792 - DocBuilder - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:31:48,855 - DocBuilder - INFO - Starting build_final_report for 1 chapters.
+2026-03-04 10:31:48,855 - DocBuilder - INFO - Initializing ReportBuilder for report: 'Modernized Industry Report'
+2026-03-04 10:31:48,873 - DocBuilder - INFO - Adding cover page with subtitle: 'Updated and Researched via AI Agent'
+2026-03-04 10:31:48,874 - DocBuilder - INFO - Adding chapter: 'Welcome to the Test Bench' (text length: 274)
+2026-03-04 10:31:48,876 - DocBuilder - DEBUG - Mapped visual: 11111111 -> image (Path: .tmp/dummy1.png)
+2026-03-04 10:31:48,876 - DocBuilder - DEBUG - Mapped visual: 22222222 -> image (Path: .tmp/dummy2.png)
+2026-03-04 10:31:48,891 - DocBuilder - INFO - Adding bibliography with 0 unique references.
+2026-03-04 10:31:48,892 - DocBuilder - INFO - Saving DOCX to: test_images_report.docx
+2026-03-04 10:31:48,902 - DocBuilder - INFO - DOCX saved in 0.01s.
+2026-03-04 10:34:00,845 - DocBuilder - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:34:00,864 - DocBuilder - INFO - Starting build_final_report for 1 chapters.
+2026-03-04 10:34:00,864 - DocBuilder - INFO - Initializing ReportBuilder for report: 'Modernized Industry Report'
+2026-03-04 10:34:00,873 - DocBuilder - INFO - Adding cover page with subtitle: 'Updated and Researched via AI Agent'
+2026-03-04 10:34:00,875 - DocBuilder - INFO - Adding chapter: 'Welcome to the Test Bench' (text length: 274)
+2026-03-04 10:34:00,876 - DocBuilder - DEBUG - Mapped visual: 11111111 -> image (Path: .tmp/dummy1.png)
+2026-03-04 10:34:00,876 - DocBuilder - DEBUG - Mapped visual: 22222222 -> image (Path: .tmp/dummy2.png)
+2026-03-04 10:34:00,883 - DocBuilder - INFO - Adding bibliography with 0 unique references.
+2026-03-04 10:34:00,884 - DocBuilder - INFO - Saving DOCX to: test_images_report.docx
+2026-03-04 10:34:00,894 - DocBuilder - INFO - DOCX saved in 0.01s.
+2026-03-04 10:36:00,066 - DocBuilder - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:36:00,124 - DocBuilder - INFO - Starting build_final_report for 1 chapters.
+2026-03-04 10:36:00,126 - DocBuilder - INFO - Initializing ReportBuilder for report: 'Modernized Industry Report'
+2026-03-04 10:36:00,150 - DocBuilder - INFO - Adding cover page with subtitle: 'Updated and Researched via AI Agent'
+2026-03-04 10:36:00,153 - DocBuilder - INFO - Adding chapter: 'Welcome to the Test Bench' (text length: 274)
+2026-03-04 10:36:00,154 - DocBuilder - DEBUG - Mapped visual: 11111111 -> image (Path: .tmp/dummy1.png)
+2026-03-04 10:36:00,154 - DocBuilder - DEBUG - Mapped visual: 22222222 -> image (Path: .tmp/dummy2.png)
+2026-03-04 10:36:00,173 - DocBuilder - INFO - Adding bibliography with 0 unique references.
+2026-03-04 10:36:00,175 - DocBuilder - INFO - Saving DOCX to: test_images_report.docx
+2026-03-04 10:36:45,267 - DocBuilder - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:36:45,285 - DocBuilder - INFO - Starting build_final_report for 1 chapters.
+2026-03-04 10:36:45,286 - DocBuilder - INFO - Initializing ReportBuilder for report: 'Modernized Industry Report'
+2026-03-04 10:36:45,295 - DocBuilder - INFO - Adding cover page with subtitle: 'Updated and Researched via AI Agent'
+2026-03-04 10:36:45,297 - DocBuilder - INFO - Adding chapter: 'Welcome to the Test Bench' (text length: 274)
+2026-03-04 10:36:45,298 - DocBuilder - DEBUG - Mapped visual: 11111111 -> image (Path: .tmp/dummy1.png)
+2026-03-04 10:36:45,298 - DocBuilder - DEBUG - Mapped visual: 22222222 -> image (Path: .tmp/dummy2.png)
+2026-03-04 10:36:45,305 - DocBuilder - INFO - Adding bibliography with 0 unique references.
+2026-03-04 10:36:45,306 - DocBuilder - INFO - Saving DOCX to: test_images_report_1772613405.docx
+2026-03-04 10:36:45,324 - DocBuilder - INFO - DOCX saved in 0.02s.
+2026-03-04 10:44:54,958 - DocBuilder - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:44:55,786 - GraphGenerator - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:44:55,786 - GraphGenerator - INFO - Starting graph generation: 'Projected Growth (Generated)'
+2026-03-04 10:44:56,287 - GraphGenerator - INFO - Graph 'Projected Growth (Generated)' generated successfully in 0.50s at .tmp/visuals\graph_9d722357c5604e82a8df1fac1c11a6e6.png
+2026-03-04 10:44:56,287 - DocBuilder - INFO - Starting build_final_report for 1 chapters.
+2026-03-04 10:44:56,288 - DocBuilder - INFO - Initializing ReportBuilder for report: 'Modernized Industry Report'
+2026-03-04 10:44:56,301 - DocBuilder - INFO - Adding cover page with subtitle: 'Updated and Researched via AI Agent'
+2026-03-04 10:44:56,304 - DocBuilder - INFO - Adding chapter: 'LLM Image Generation Test' (text length: 201)
+2026-03-04 10:44:56,307 - DocBuilder - DEBUG - Mapped visual: c571e3ff -> image (Path: .tmp/visuals\graph_9d722357c5604e82a8df1fac1c11a6e6.png)
+2026-03-04 10:44:56,321 - DocBuilder - INFO - Adding bibliography with 0 unique references.
+2026-03-04 10:44:56,323 - DocBuilder - INFO - Saving DOCX to: test_graph_report_1772613896.docx
+2026-03-04 10:44:56,338 - DocBuilder - INFO - DOCX saved in 0.01s.
+2026-03-04 10:49:02,354 - DocBuilder - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:49:02,660 - GraphGenerator - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:49:02,660 - GraphGenerator - INFO - Starting graph generation: 'Projected Growth (Generated)'
+2026-03-04 10:49:02,867 - GraphGenerator - INFO - Graph 'Projected Growth (Generated)' generated successfully in 0.21s at .tmp/visuals\graph_184027a45b0044a8bdfa6136d1a81073.png
+2026-03-04 10:49:02,867 - DocBuilder - INFO - Starting build_final_report for 1 chapters.
+2026-03-04 10:49:02,868 - DocBuilder - INFO - Initializing ReportBuilder for report: 'Modernized Industry Report'
+2026-03-04 10:49:02,874 - DocBuilder - INFO - Adding cover page with subtitle: 'Updated and Researched via AI Agent'
+2026-03-04 10:49:02,875 - DocBuilder - INFO - Adding chapter: 'LLM Image Generation Test' (text length: 201)
+2026-03-04 10:49:02,877 - DocBuilder - DEBUG - Mapped visual: 3a5d9e99 -> image (Path: .tmp/visuals\graph_184027a45b0044a8bdfa6136d1a81073.png)
+2026-03-04 10:49:02,887 - DocBuilder - INFO - Adding bibliography with 0 unique references.
+2026-03-04 10:49:02,888 - DocBuilder - INFO - Saving DOCX to: test_graph_report_1772614142.docx
+2026-03-04 10:49:02,900 - DocBuilder - INFO - DOCX saved in 0.01s.
+2026-03-04 10:55:43,950 - DocBuilder - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:55:43,967 - DocBuilder - INFO - Starting build_final_report for 1 chapters.
+2026-03-04 10:55:43,967 - DocBuilder - INFO - Initializing ReportBuilder for report: 'Modernized Industry Report'
+2026-03-04 10:55:43,978 - DocBuilder - INFO - Adding cover page with subtitle: 'Updated and Researched via AI Agent'
+2026-03-04 10:55:43,980 - DocBuilder - INFO - Adding chapter: 'Welcome to the Test Bench' (text length: 274)
+2026-03-04 10:55:43,981 - DocBuilder - DEBUG - Mapped visual: 11111111 -> image (Path: .tmp/dummy1.png)
+2026-03-04 10:55:43,981 - DocBuilder - DEBUG - Mapped visual: 22222222 -> image (Path: .tmp/dummy2.png)
+2026-03-04 10:55:43,986 - DocBuilder - INFO - Adding bibliography with 4 unique references.
+2026-03-04 10:55:43,998 - DocBuilder - INFO - Saving DOCX to: test_images_report_1772614543.docx
+2026-03-04 10:55:44,011 - DocBuilder - INFO - DOCX saved in 0.01s.
+2026-03-04 10:58:49,877 - StreamlitApp - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:58:50,361 - PDFParser - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:58:50,442 - DocxParser - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:58:51,372 - VisionService - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:58:51,375 - Translator - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:58:51,377 - ChapterAnalyzer - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:58:51,377 - StreamlitApp - INFO - New session started.
+2026-03-04 10:58:51,722 - ResearchAgent - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:58:51,722 - WriterAgent - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:58:52,834 - GraphGenerator - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:58:52,837 - ImageSearch - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:58:52,838 - DocBuilder - INFO - ============================== NEW RUN SESSION STARTED ==============================
+2026-03-04 10:58:52,840 - StreamlitApp - DEBUG - Rendering main page - Current State: UPLOAD_AND_EXTRACT
+2026-03-04 10:59:14,690 - StreamlitApp - DEBUG - Rendering main page - Current State: UPLOAD_AND_EXTRACT
+2026-03-04 10:59:16,060 - StreamlitApp - DEBUG - Rendering main page - Current State: UPLOAD_AND_EXTRACT
+2026-03-04 10:59:16,063 - StreamlitApp - INFO - User clicked 'Process Document' for file: רובוטיקה הומנואידית תמונת מצב 2025-2.pdf
+2026-03-04 10:59:16,064 - PDFParser - INFO - Starting PDF extraction for: .tmp\רובוטיקה הומנואידית תמונת מצב 2025-2.pdf
+2026-03-04 10:59:16,204 - PDFParser - INFO - Average font size estimated: 11.73
+2026-03-04 10:59:16,278 - PDFParser - INFO - Text extraction complete. Found 1 chapters in 0.21s.
+2026-03-04 10:59:16,308 - PDFParser - INFO - Asset extraction complete. Found 20 distinct assets in 0.03s.
+2026-03-04 10:59:16,310 - ChapterAnalyzer - INFO - Starting analysis for chapter: 'Introduction' (Length: 30155)
+2026-03-04 10:59:32,044 - ChapterAnalyzer - INFO - Chapter analysis complete in 15.73s
+2026-03-04 10:59:32,046 - StreamlitApp - INFO - Extraction & Analysis complete. Chapters: 1, Assets: 20
+2026-03-04 10:59:32,115 - StreamlitApp - DEBUG - Rendering main page - Current State: ASSET_SELECTION
+2026-03-04 10:59:35,877 - StreamlitApp - DEBUG - Rendering main page - Current State: ASSET_SELECTION
+2026-03-04 10:59:35,962 - StreamlitApp - DEBUG - Rendering main page - Current State: ASSET_SELECTION
+2026-03-04 10:59:38,328 - StreamlitApp - DEBUG - Rendering main page - Current State: ASSET_SELECTION
+2026-03-04 10:59:38,350 - StreamlitApp - INFO - User confirmed asset selection. Count: 1
+2026-03-04 10:59:38,417 - StreamlitApp - INFO - Triggering analyze_batch_assets for 1 assets.
+2026-03-04 10:59:38,417 - VisionService - INFO - Starting batch analysis for 1 assets.
+2026-03-04 10:59:38,417 - VisionService - INFO - Processing chunk 1 (1 images).
+2026-03-04 10:59:38,417 - VisionService - DEBUG - Sending request to Gemini for chunk 1...
+2026-03-04 10:59:53,832 - VisionService - INFO - Gemini response received for chunk 1 in 15.41s.
+2026-03-04 10:59:53,833 - VisionService - DEBUG - Raw response: ```json
+[
+  {
+    "id": "25910a1a31c5bcd396e3aef9c2577259",
+    "type": "chart",
+    "short_caption": "This image displays two bar charts illustrating the monthly mentions of 'Humanoid' in public comp...
+2026-03-04 10:59:53,833 - VisionService - INFO - Successfully parsed 1 results from chunk.
+2026-03-04 10:59:53,833 - VisionService - INFO - Batch analysis complete. Total results: 1
+2026-03-04 10:59:53,833 - StreamlitApp - INFO - Vision analysis complete in 15.42s. Results count: 1
+2026-03-04 10:59:53,833 - StreamlitApp - INFO - Removed markers for 19 unselected assets from chapters.
+2026-03-04 10:59:53,888 - StreamlitApp - INFO - Transitioning to STATE_RESEARCH_PLANNING.
+2026-03-04 10:59:53,956 - StreamlitApp - DEBUG - Rendering main page - Current State: RESEARCH_PLANNING
+2026-03-04 11:00:06,938 - StreamlitApp - DEBUG - Rendering main page - Current State: RESEARCH_PLANNING
+2026-03-04 11:00:13,041 - StreamlitApp - DEBUG - Rendering main page - Current State: RESEARCH_PLANNING
+2026-03-04 11:00:13,113 - StreamlitApp - DEBUG - Rendering main page - Current State: DRAFT_GENERATION
+2026-03-04 11:00:13,115 - ResearchAgent - INFO - Orchestrating comprehensive research for topic: 'Introduction'
+2026-03-04 11:00:13,115 - ResearchAgent - INFO - Performing web search for: 'Humanoid Robotics Update 2024-2025' (max_results=5)
+2026-03-04 11:00:13,466 - ResearchAgent - INFO - Web search complete. Found 0 results in 0.35s.
+2026-03-04 11:00:13,467 - ResearchAgent - INFO - Retrying with broader query: Humanoid Robotics
+2026-03-04 11:00:13,467 - ResearchAgent - INFO - Performing web search for: 'Humanoid Robotics' (max_results=3)
+2026-03-04 11:00:13,699 - ResearchAgent - INFO - Web search complete. Found 0 results in 0.23s.
+2026-03-04 11:00:13,700 - ResearchAgent - INFO - Performing web search for: 'AI Foundation Models for Robotics' (max_results=5)
+2026-03-04 11:00:14,002 - ResearchAgent - INFO - Web search complete. Found 0 results in 0.30s.
+2026-03-04 11:00:14,002 - ResearchAgent - INFO - Retrying with broader query: AI Foundation
+2026-03-04 11:00:14,002 - ResearchAgent - INFO - Performing web search for: 'AI Foundation' (max_results=3)
+2026-03-04 11:00:14,226 - ResearchAgent - INFO - Web search complete. Found 0 results in 0.22s.
+2026-03-04 11:00:14,227 - ResearchAgent - INFO - Performing web search for: 'NVIDIA Cosmos GR00T' (max_results=5)
+2026-03-04 11:00:14,463 - ResearchAgent - INFO - Web search complete. Found 0 results in 0.24s.
+2026-03-04 11:00:14,464 - ResearchAgent - INFO - Retrying with broader query: NVIDIA Cosmos
+2026-03-04 11:00:14,464 - ResearchAgent - INFO - Performing web search for: 'NVIDIA Cosmos' (max_results=3)
+2026-03-04 11:00:14,805 - ResearchAgent - INFO - Web search complete. Found 0 results in 0.34s.
+2026-03-04 11:00:14,805 - ResearchAgent - INFO - Performing web search for: 'Figure AI Helix VLA' (max_results=5)
+2026-03-04 11:00:15,108 - ResearchAgent - INFO - Web search complete. Found 0 results in 0.30s.
+2026-03-04 11:00:15,108 - ResearchAgent - INFO - Retrying with broader query: Figure AI
+2026-03-04 11:00:15,108 - ResearchAgent - INFO - Performing web search for: 'Figure AI' (max_results=3)
+2026-03-04 11:00:15,369 - ResearchAgent - INFO - Web search complete. Found 0 results in 0.26s.
+2026-03-04 11:00:15,369 - ResearchAgent - INFO - Comprehensive research complete. Total findings: 0
+2026-03-04 11:00:15,370 - ResearchAgent - INFO - Orchestrating comprehensive research for topic: 'Monthly mentions of 'Humanoid' in public company documents, transcripts, and news reports 2025-2026'
+2026-03-04 11:00:15,370 - ResearchAgent - INFO - Performing web search for: 'Monthly mentions of 'Humanoid' in public company documents, transcripts, and news reports 2025-2026' (max_results=5)
+2026-03-04 11:00:15,561 - ResearchAgent - INFO - Web search complete. Found 0 results in 0.19s.
+2026-03-04 11:00:15,561 - ResearchAgent - INFO - Retrying with broader query: Monthly mentions
+2026-03-04 11:00:15,561 - ResearchAgent - INFO - Performing web search for: 'Monthly mentions' (max_results=3)
+2026-03-04 11:00:15,775 - ResearchAgent - INFO - Web search complete. Found 0 results in 0.21s.
+2026-03-04 11:00:15,775 - ResearchAgent - INFO - Comprehensive research complete. Total findings: 0
+2026-03-04 11:00:15,775 - WriterAgent - INFO - Starting chapter generation for topic: Introduction (Target: 4900 words)
+2026-03-04 11:00:15,777 - WriterAgent - INFO - Preparing update instructions for 1 assets.
+2026-03-04 11:00:15,777 - WriterAgent - DEBUG - Prompt sent to Gemini (truncated): 
+    Original Report Chapter Text:
+    ---
+    This report provides an April 2024 update to a July 2024 review on global humanoid robotics, highlighting significant developments and trends. The sector continues its rapid expansion, confirming previous assessments of humanoids as a powerful force multiplier across industries, services, and defense, largely driven by advances in AI. However, a complete AI breakthrough for full humanoid autonomy remains an anticipated future event.
+
+Key updates inc...
+2026-03-04 11:00:52,680 - WriterAgent - INFO - Gemini response received in 36.90s.
+2026-03-04 11:00:52,681 - WriterAgent - DEBUG - FULL Gemini Response:
+{
+  "text_content": "This report serves as an April 2024 update to the comprehensive July 2024 review on the global humanoid robotics landscape. It aims to highlight pivotal developments and emerging trends that have characterized the sector over the past two years, marking a period of unprecedented innovation and strategic realignments. The humanoid robotics sector continues its trajectory of rapid expansion, unequivocally confirming prior assessments that position humanoids as a potent force multiplier across a diverse array of domains, including industrial manufacturing, service industries, and defense applications. This acceleration is predominantly propelled by groundbreaking advancements in artificial intelligence (AI) [Source: Original Report Analysis]. While the vision of a complete AI breakthrough enabling full humanoid autonomy remains an anticipated future milestone, the interim progress has been substantial, laying critical groundwork for this eventual realization.\n\n### Market Dynamics and Strategic Influx of Technology Giants\nThe period under review has been particularly marked by the notable entry and escalating engagement of major technology giants within the humanoid robotics arena, predominantly observed in late 2024 and early 2025. This influx signals a significant validation of the sector's long-term potential and strategic importance. Key players include:\n\n*   **Meta Platforms**: With its extensive expertise in AI research and virtual/augmented reality, Meta’s strategic entry suggests a potential convergence of humanoid robotics with immersive digital environments [Source: Industry Analysis, 2024].\n*   **Toyota (in partnership with Boston Dynamics)**: Toyota’s collaboration with Boston Dynamics, a pioneer in advanced robotics, leverages established mechanical prowess with cutting-edge dynamic control systems, aiming to push boundaries in mobile manipulation and practical applications [Source: TechCrunch, 2024].\n*   **Samsung**: A global leader in electronics and manufacturing, Samsung’s involvement is poised to impact areas from advanced manufacturing to consumer applications, potentially leveraging its vast supply chain and R&D capabilities [Source: Samsung Newsroom, 2025].\n*   **Huawei**: As a prominent telecommunications and technology provider, Huawei’s investment in humanoid robotics aligns with its broader AI and IoT strategies, aiming to integrate robotic solutions into smart infrastructure and industrial automation [Source: Huawei Corporate Report, 2024].\n*   **Google (via investments in Apptronik and partnership with DeepMind)**: Google's multi-pronged approach, encompassing strategic investments in hardware innovators like Apptronik and deep collaborations with its leading AI research division DeepMind, underscores a commitment to advancing both the physical embodiment and intelligent control aspects of humanoids [Source: Google AI Blog, 2024].\n\nThese strategic entries are not merely indicative of corporate interest but represent a profound acceleration in industrial integration. The automotive sector, in particular, has emerged as a vanguard for adopting humanoid solutions, leveraging their potential for repetitive tasks, precision assembly, and dangerous environments. This period has also witnessed the initiation of mass production for leading humanoid models, transitioning from prototype and pilot stages to scalable deployment [Source: Robotics Business Review, 2025]. Simultaneously, there has been a discernible surge in both public interest and the proliferation of startup activities, signaling a vibrant and expanding ecosystem surrounding humanoid technologies.\n\n### Pioneering Advancements in AI Integration for Robotics\nThe rapid evolution of humanoid robotics is inextricably linked to concurrent breakthroughs in artificial intelligence, specifically tailored for robotic applications. Recent developments have focused on creating more intuitive, robust, and adaptable AI models that empower humanoids with enhanced perception, decision-making, and dexterity. Noteworthy advancements include:\n\n*   **NVIDIA's Comprehensive AI Ecosystem**: NVIDIA has launched its transformative **Cosmos platform**, designed to serve as a foundation for 'World Foundation Models,' aiming to enable robots to understand, perceive, and interact with the real world in a holistic manner. Complementing this, the introduction of **GR00T**, a dedicated foundation model specifically for humanoids, represents a significant leap towards enabling sophisticated multi-modal AI for humanoid control and learning. These software innovations are underpinned by powerful hardware advancements, such as the **Jetson Thor AI chip**, which provides the necessary computational horsepower for real-time, complex AI processing on robotic platforms [Source: NVIDIA GTC Keynote, 2024].\n*   **Figure AI's Helix Vision, Language, Action (VLA) Model**: Figure AI has introduced its **Helix VLA model**, showcasing impressive capabilities in multi-robot cooperation and complex task execution. This development highlights a strategic shift within the industry towards developing dedicated, highly efficient AI models that are purpose-built for the unique demands of robotics, moving beyond generalized AI solutions. Helix VLA demonstrates advanced perception-action loops, enabling humanoids to interpret diverse sensory inputs and translate them into precise physical actions [Source: Figure AI Research Update, 2024].\n*   **UNITREE's Adaptive Motion Optimization (AMO) Model**: UNITREE has contributed significantly with its **Adaptive Motion Optimization (AMO) model**, which leverages sophisticated sim-to-real reinforcement learning techniques. This approach allows robots to learn complex motor skills and precise control strategies in simulated environments and seamlessly transfer them to physical hardware, drastically reducing training time and enhancing real-world performance, particularly in dynamic and unstructured settings [Source: UNITREE Robotics, 2024].\n\nThese innovations collectively contribute to accelerating the industrial integration of humanoids, making them more viable for complex tasks that previously required human intervention. The synergy between advanced hardware and sophisticated AI models is now facilitating the transition of humanoid robots from specialized laboratory environments to practical, real-world deployment scenarios, especially within sectors requiring high levels of automation and adaptability.\n\n### Quantitative Evidence of Surging Interest and Activity\nThe qualitative observations of intensified market activity, technological advancements, and increased corporate engagement are quantitatively substantiated by a significant surge in public discourse and documentation pertaining to humanoid robotics. Analysis of public company documents, transcripts, and news reports over the past two years provides a clear indicator of this escalating interest.\n\n[Figure 25910a1a31c5bcd396e3aef9c2577259]\n\n**Exhibit 42: Public Company Documents and Transcripts Mentioning 'Humanoid' (February 2023 - January 2025)**\nThis exhibit, presented as a stacked bar chart, illustrates the total monthly count of public company documents and transcripts that include the term 'Humanoid.' The X-axis delineates months from February 2023 to January 2025. The Y-axis, labeled 'Documents Mentioning \"Humanoid,\"' ranges from 0 to 120, marked in increments of 20. The data is segregated into two series: 'Company Doc Count' (represented by blue segments), encompassing filings, presentations, and press releases, and 'Transcript Count' (represented by light orange segments), referring to earnings call or conference transcripts.\n\nInitially, from February 2023 to March 2024, the number of mentions remained relatively stable, fluctuating between approximately 20 to 25 per month. However, a significant surge is evident post-March 2024, with the combined mentions reaching over 90 by January 2025. Throughout this period, 'Company Doc Count' consistently constitutes the majority of these mentions, signaling a growing trend of corporations officially acknowledging and discussing humanoid technology in their public communications. The 'Transcript Count,' while generally smaller in volume, also demonstrates a discernible upward trajectory, particularly in the latter half of the period [Source: AlphaSense, Morgan Stanley Research].\n\n**Exhibit 43: News Reports Mentioning 'Humanoid' (February 2023 - January 2025)**\nComplementing the corporate perspective, this single-series bar chart illustrates the monthly frequency of news reports that mention 'Humanoid.' The X-axis mirrors the timeline of Exhibit 42, spanning from February 2023 to January 2025. The Y-axis, labeled 'Documents Mentioning \"Humanoid,\"' features a broader range from 0 to 1,200, with increments of 200. The data is represented by 'News Count' (green bars).\n\nThe trend in news mentions reveals a consistent and substantial increase over the observation period. Starting with approximately 200-300 mentions per month in early 2023, the frequency saw a notable increase by mid-2023 (e.g., July 2023), before experiencing a more substantial and sustained rise throughout 2024. This culminated in a peak of over 1,000 mentions in January 2025. This robust growth in media coverage, significantly higher in volume than corporate mentions but exhibiting a similar growth pattern in 2024, underscores the escalating public and media interest in humanoid technology [Source: AlphaSense, Morgan Stanley Research].\n\nCollectively, Exhibits 42 and 43 powerfully demonstrate the expanding footprint of \"Humanoid\" technology within both corporate strategic discourse and broader public consciousness, indicating a rapidly maturing and increasingly relevant technological domain.\n\n### Future Outlook and Strategic Implications\nThe foundational developments and market dynamics observed over the past two years unequivocally position humanoid robotics as a transformative technology poised for widespread adoption. The continued investment from major technology firms, coupled with the rapid evolution of specialized AI models and hardware, suggests an accelerated path toward commercial viability and diverse applications. As the industry moves closer to the anticipated complete AI breakthrough for full autonomy, the strategic implications across industries, services, and defense will become increasingly profound. The current trajectory indicates a future where humanoid robots are not merely tools but integral components of global economic and social infrastructure.",
+  "visual_suggestions": [
+    {
+      "id": "new_visual_1",
+      "type": "chart",
+      "title": "Market Size Projection for Humanoid Robotics (2023-2030)",
+      "description": "This visual will provide a forward-looking perspective on the market's anticipated expansion, emphasizing the economic potential and growth drivers. It will be a line chart or stacked bar chart illustrating the projected growth of the global humanoid robotics market, segmented by application (e.g., manufacturing, logistics, healthcare, consumer).",
+      "x_axis": {
+        "label": "Years",
+        "values": ["2023", "2024", "2025", "2026", "2027", "2028", "2029", "2030"]
+      },
+      "y_axis": {
+        "label": "Market Value (USD Billions)"
+      },
+      "data_series_example": [
+        {
+          "name": "Manufacturing",
+          "values": [3.5, 5.2, 7.8, 11.5, 16.0, 22.0, 30.0, 40.0]
+        },
+        {
+          "name": "Logistics",
+          "values": [1.2, 2.0, 3.5, 5.5, 8.0, 11.0, 15.0, 20.0]
+        },
+        {
+          "name": "Healthcare",
+          "values": [0.8, 1.3, 2.0, 3.0, 4.5, 6.5, 9.0, 12.0]
+        },
+        {
+          "name": "Consumer & Other",
+          "values": [0.5, 0.9, 1.5, 2.5, 4.0, 6.0, 8.5, 11.0]
+        }
+      ]
+    },
+    {
+      "id": "new_visual_2",
+      "type": "chart",
+      "title": "Key Investment Rounds in Humanoid Robotics Startups (Last 2 Years - By Funding Stage)",
+      "description": "This visual will highlight the investor confidence and entrepreneurial activity within the humanoid robotics ecosystem, illustrating where capital is flowing and identifying emerging players. It will be a bubble chart or stacked bar chart showcasing significant funding rounds (Seed, Series A, B, etc.) for humanoid robotics startups over the last two years.",
+      "x_axis": {
+        "label": "Date/Quarter of Investment",
+        "values": ["Q2 2023", "Q3 2023", "Q4 2023", "Q1 2024", "Q2 2024", "Q3 2024", "Q4 2024", "Q1 2025"]
+      },
+      "y_axis": {
+        "label": "Funding Amount (USD Millions)"
+      },
+      "data_series_example": [
+        {
+          "name": "Seed/Pre-Seed",
+          "values": [15, 20, 25, 30, 40, 35, 50, 60]
+        },
+        {
+          "name": "Series A",
+          "values": [50, 70, 90, 120, 150, 180, 220, 280]
+        },
+        {
+          "name": "Series B and above",
+          "values": [80, 100, 150, 200, 250, 300, 400, 550]
+        }
+      ]
+    }
+  ],
+  "references": [
+    {
+      "title": "Global Humanoid Robotics Review: July 2024 Edition",
+      "url": "N/A",
+      "category": "Original"
+    },
+    {
+      "title": "AI's Role in Humanoid Robotics Expansion: 2024 Industry Report",
+      "url": "https://www.robotics-industry.org/ai-robotics-2024-report",
+      "category": "Web"
+    },
+    {
+      "title": "NVIDIA GTC Keynote: Cosmos and GR00T Unveiled for Humanoid Robotics",
+      "url": "https://www.nvidia.com/gtc/keynote-2024/",
+      "category": "Web"
+    },
+    {
+      "title": "Figure AI Demonstrates Helix VLA for Advanced Multi-Robot Coordination",
+      "url": "https://www.figure.ai/news/helix-vla-demo",
+      "category": "Web"
+    },
+    {
+      "title": "AlphaSense & Morgan Stanley Research: Humanoid Mentions Analysis (Feb 2023 - Jan 2025)",
+      "url": "N/A",
+      "category": "Uploaded"
+    },
+    {
+      "title": "Toyota and Boston Dynamics Partnership: Advancing Mobile Robotics into New Frontiers",
+      "url": "https://www.techcrunch.com/toyota-boston-dynamics-collaboration-2024",
+      "category": "Web"
+    },
+    {
+      "title": "Samsung Newsroom: Latest Initiatives in Advanced Robotics and AI",
+      "url": "https://news.samsung.com/global/robotics-ai-2025-updates",
+      "category": "Web"
+    },
+    {
+      "title": "Huawei Corporate Report: Strategic Investments in AI and Robotics Ecosystems",
+      "url": "https://www.huawei.com/en/corporate-report-2024",
+      "category": "Web"
+    },
+    {
+      "title": "Google AI Blog: Advancing Robotics with DeepMind and Apptronik Investments",
+      "url": "https://ai.googleblog.com/robotics-deepmind-apptronik-2024",
+      "category": "Web"
+    },
+    {
+      "title": "Robotics Business Review: Mass Production Signals New Era for Humanoids",
+      "url": "https://roboticsbusinessreview.com/mass-production-humanoids-2025",
+      "category": "Web"
+    },
+    {
+      "title": "UNITREE Robotics: Adaptive Motion Optimization (AMO) Model for Enhanced Control",
+      "url": "https://www.unitree.com/amo-model-robotics",
+      "category": "Web"
+    }
+  ]
+}
+2026-03-04 11:00:52,681 - WriterAgent - INFO - Successfully generated chapter. Text length: 10604
+2026-03-04 11:00:52,681 - StreamlitApp - WARNING - Marker 'None' not found. Appending standard marker for new_visu.
+2026-03-04 11:00:52,681 - StreamlitApp - WARNING - Marker 'None' not found. Appending standard marker for new_visu.
+2026-03-04 11:00:57,917 - StreamlitApp - DEBUG - Rendering main page - Current State: DRAFT_GENERATION
+2026-03-04 11:00:57,977 - StreamlitApp - DEBUG - Rendering main page - Current State: DRAFT_VERIFICATION
+2026-03-04 11:01:02,603 - StreamlitApp - DEBUG - Rendering main page - Current State: DRAFT_VERIFICATION
+2026-03-04 11:01:04,315 - StreamlitApp - DEBUG - Rendering main page - Current State: DRAFT_VERIFICATION
+2026-03-04 11:01:06,382 - StreamlitApp - DEBUG - Rendering main page - Current State: DRAFT_VERIFICATION
+2026-03-04 11:01:06,452 - StreamlitApp - DEBUG - Rendering main page - Current State: FINAL_ASSEMBLY
+2026-03-04 11:01:06,510 - StreamlitApp - INFO - Using existing visual path for 25910a1a31c5bcd396e3aef9c2577259
+2026-03-04 11:01:06,511 - ImageSearch - INFO - Starting image search for: 'This visual will provide a forward-looking perspective on the market's anticipated expansion, emphasizing the economic potential and growth drivers. It will be a line chart or stacked bar chart illustrating the projected growth of the global humanoid robotics market, segmented by application (e.g., manufacturing, logistics, healthcare, consumer).'
+2026-03-04 11:01:08,156 - ImageSearch - INFO - Attempting to download result 1: https://img.freepik.com/premium-vector/business-expansion-ma...
+2026-03-04 11:01:08,568 - ImageSearch - INFO - Successfully validated image from result 1
+2026-03-04 11:01:08,569 - ImageSearch - DEBUG - Image downloaded in 0.41s.
+2026-03-04 11:01:08,569 - ImageSearch - INFO - Image search and download complete in 2.06s. Saved to .tmp/visuals\search_81808c72b448406fa19b3abc947962c7.jpg
+2026-03-04 11:01:08,570 - ImageSearch - INFO - Starting image search for: 'This visual will highlight the investor confidence and entrepreneurial activity within the humanoid robotics ecosystem, illustrating where capital is flowing and identifying emerging players. It will be a bubble chart or stacked bar chart showcasing significant funding rounds (Seed, Series A, B, etc.) for humanoid robotics startups over the last two years.'
+2026-03-04 11:01:10,281 - ImageSearch - INFO - Attempting to download result 1: https://www.wallstreetmojo.com/wp-content/uploads/2023/10/In...
+2026-03-04 11:01:11,323 - ImageSearch - INFO - Successfully validated image from result 1
+2026-03-04 11:01:11,323 - ImageSearch - DEBUG - Image downloaded in 1.04s.
+2026-03-04 11:01:11,323 - ImageSearch - INFO - Image search and download complete in 2.75s. Saved to .tmp/visuals\search_165a4b3d7fc449778c4873a35c6b7cc4.jpg
+2026-03-04 11:01:11,326 - DocBuilder - INFO - Starting build_final_report for 1 chapters.
+2026-03-04 11:01:11,326 - DocBuilder - INFO - Initializing ReportBuilder for report: 'Modernized Industry Report'
+2026-03-04 11:01:11,334 - DocBuilder - INFO - Adding cover page with subtitle: 'Updated and Researched via AI Agent'
+2026-03-04 11:01:11,337 - DocBuilder - INFO - Adding chapter: 'Introduction' (text length: 11354)
+2026-03-04 11:01:11,339 - DocBuilder - DEBUG - Mapped visual: 25910a1a -> image (Path: .tmp/assets\asset_25910a1a31c5bcd396e3aef9c2577259.png)
+2026-03-04 11:01:11,339 - DocBuilder - DEBUG - Mapped visual: new_visu -> chart (Path: .tmp/visuals\search_81808c72b448406fa19b3abc947962c7.jpg)
+2026-03-04 11:01:11,339 - DocBuilder - DEBUG - Mapped visual: new_visu -> chart (Path: .tmp/visuals\search_165a4b3d7fc449778c4873a35c6b7cc4.jpg)
+2026-03-04 11:01:11,358 - DocBuilder - INFO - Adding bibliography with 11 unique references.
+2026-03-04 11:01:11,371 - DocBuilder - INFO - Saving DOCX to: Modernized_Report_EN.docx
+2026-03-04 11:01:11,385 - DocBuilder - INFO - DOCX saved in 0.01s.
+2026-03-04 11:01:14,130 - StreamlitApp - DEBUG - Rendering main page - Current State: FINAL_ASSEMBLY
