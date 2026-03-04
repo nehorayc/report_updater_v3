@@ -12,3 +12,9 @@ token.json
 .venv/
 env/
 venv/
+
+# Output and Logs
+logs/
+*.docx
+*.pdf
+temp reports/
