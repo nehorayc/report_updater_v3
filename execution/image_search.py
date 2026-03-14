@@ -1,4 +1,4 @@
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 import requests
 import os
 import uuid
@@ -11,10 +11,20 @@ logger = setup_logger("ImageSearch")
 def search_and_download_image(query: str, output_dir: str = ".tmp/visuals") -> dict:
     """
     Search for an image and download the top result.
+    Automatically enriches the query with quality keywords and
+    filters out images smaller than 400x300 px.
     """
     logger.info(f"Starting image search for: '{query}'")
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
+
+    # Enrich query with quality keywords if not already present
+    quality_suffix = "high resolution professional"
+    if quality_suffix not in query.lower():
+        enriched_query = f"{query} {quality_suffix}"
+    else:
+        enriched_query = query
+    logger.info(f"Enriched query: '{enriched_query}'")
 
     MAX_RETRIES = 3
     retry_count = 0
@@ -26,7 +36,7 @@ def search_and_download_image(query: str, output_dir: str = ".tmp/visuals") -> d
         try:
             with DDGS() as ddgs:
                 # Get a few results so we can fallback if the top one is invalid
-                results = ddgs.images(query, max_results=5)
+                results = ddgs.images(enriched_query, max_results=5)
                 results_list = list(results)
                 
                 if not results_list:
@@ -54,7 +64,13 @@ def search_and_download_image(query: str, output_dir: str = ".tmp/visuals") -> d
                         try:
                             img = Image.open(BytesIO(img_data))
                             img.verify() 
-                            logger.info(f"Successfully validated image from result {i+1}")
+                            # Re-open after verify() since it closes the file
+                            img = Image.open(BytesIO(img_data))
+                            width, height = img.size
+                            if width < 400 or height < 300:
+                                logger.warning(f"Result {i+1} too small ({width}x{height}), skipping.")
+                                continue
+                            logger.info(f"Successfully validated image from result {i+1} ({width}x{height})")
                         except Exception as ve:
                             logger.warning(f"Result {i+1} failed image validation: {ve}")
                             continue
@@ -91,16 +107,15 @@ def search_and_download_image(query: str, output_dir: str = ".tmp/visuals") -> d
             retry_count += 1
             logger.warning(f"Image search attempt {retry_count}/{MAX_RETRIES} failed for '{query}': {e}")
             if retry_count >= MAX_RETRIES:
-                logger.error(f"Max retries reached for image search '{query}'.")
-                return {"error": str(e)}
+                logger.error(f"Max retries reached for image search '{query}'. Skipping visual.")
+                return {"error": f"Image search failed after {MAX_RETRIES} attempts: {e}"}
             
             sleep_time = backoff * retry_count
             logger.info(f"Retrying in {sleep_time}s...")
             time.sleep(sleep_time)
 
-    # Fallback if all retries fail
-    logger.error(f"All retries failed for query '{query}'. Generating placeholder.")
-    return generate_placeholder_image(query, output_dir)
+    # Should not reach here, but guard against it
+    return {"error": "Image search exhausted all retries."}
 
 def generate_placeholder_image(query: str, output_dir: str) -> dict:
     """

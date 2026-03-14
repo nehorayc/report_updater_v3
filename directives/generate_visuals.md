@@ -3,22 +3,20 @@
 ## Goal
 To produce high-quality, relevant media (graphs and images) for the final report based on approved suggestions from State 5.
 
-## Part A: Graph Generation (Python Code)
+## Part A: Graph Generation (LLM Code)
 
-### 1. Code Generation Requirements
-- Use **Matplotlib** or **Plotly**.
-- The code must be self-contained (imports included).
-- Use a professional "Corporate/Financial" theme (e.g., specific color palettes, clean fonts).
-- Output must be saved to a buffer or a specific `.png` path in `.tmp/`.
+### 1. Primary Method: LLM-Generated Matplotlib Code
+- Pass the `visual_dict` (title, description, data_points, chart_type) to `generate_graph_with_llm()`.
+- The function asks Gemini (`gemini-2.5-flash`) to write a self-contained Matplotlib script.
+- The code is `exec()`-ed in a restricted globals sandbox (only matplotlib, numpy, builtins).
+- Output file is saved to `.tmp/visuals/` at DPI=150.
+- **Advantage:** Any chart type (line, bar, pie, scatter), professional styling auto-chosen by the model.
 
-### 2. Formatting Standards
-- Clear titles and legend.
-- Labeled axes with units.
-- High resolution (DPI=300).
-- Transparent background if possible, or a neutral light gray/white.
-
-### 3. Fail-Safe
-- If the code execution fails, the system must automatically generate a **Markdown Table** as a fallback.
+### 2. Fallback: Static Professional Bar Chart
+- If LLM code generation or execution fails, `generate_graph()` falls back to a built-in bar chart.
+- Uses **corporate color palette** (`#2563EB`, `#16A34A`, `#DC2626`, …).
+- Uses `seaborn-v0_8-whitegrid` or `ggplot` style, DPI=150.
+- Supports single-series and multi-series (grouped bar) data.
 
 ---
 
@@ -26,11 +24,13 @@ To produce high-quality, relevant media (graphs and images) for the final report
 
 ### 1. Search Strategy
 - Use DuckDuckGo Image Search.
-- Use high-quality keywords (e.g., adding "professional photography", "diagram", "4k").
+- The query is **automatically enriched** with `high resolution professional` before searching.
 
 ### 2. Selection & Validation
-- Preference for authoritative sources (Unsplash, Pexels, or News outlets).
-- Download images and verify they are valid byte-streams (not 404s or HTML wrappers).
+- Try the top 3 results per search.
+- Use PIL to verify each image is a valid byte-stream (not a 404 or HTML wrapper).
+- **Filter by minimum size**: discard any image smaller than **400×300 px** (avoids icons/thumbnails).
+- Preference for authoritative sources when possible (Unsplash, Pexels, News outlets).
 
 ---
 

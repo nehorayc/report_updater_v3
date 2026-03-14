@@ -61,28 +61,25 @@ def analyze_batch_assets(assets: List[Dict]) -> List[Dict]:
             except Exception as e:
                 logger.error(f"Error loading image {asset['path']}: {e}")
                 
+        # Use JSON mode for guaranteed valid JSON output
+        generation_config = {"response_mime_type": "application/json"}
+
         start_time = time.time()
         try:
             logger.debug(f"Sending request to Gemini for chunk {i//chunk_size + 1}...")
-            response = model.generate_content(prompt_parts)
+            response = model.generate_content(prompt_parts, generation_config=generation_config)
             latency = time.time() - start_time
             logger.info(f"Gemini response received for chunk {i//chunk_size + 1} in {latency:.2f}s.")
             
-            text = response.text
-            logger.debug(f"Raw response: {text[:200]}...") # Log start of response
-            
-             # Cleanup JSON code blocks
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0].strip()
-            elif "```" in text:
-                text = text.split("```")[1].split("```")[0].strip()
-                
+            text = response.text.strip()
+            logger.debug(f"Raw response: {text[:200]}...")
+
             parsed = json.loads(text)
             if isinstance(parsed, list):
                 results.extend(parsed)
                 logger.info(f"Successfully parsed {len(parsed)} results from chunk.")
             else:
-                 # Fallback if model returns single object
+                 # Fallback if model returns single object instead of list
                  results.append(parsed)
                  logger.info("Successfully parsed 1 result from chunk (fallback).")
                  

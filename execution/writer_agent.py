@@ -60,37 +60,76 @@ def write_chapter(original_text: str, research_findings: List[Dict], blueprint: 
     - Writing Style: {writing_style}
     - TARGET LENGTH: Approximately {target_word_count} words.
 
+    THINK STEP BY STEP (do not output this reasoning, just follow the process):
+    Step 1 — Identify every outdated claim, statistic, or date in the original text.
+    Step 2 — For each outdated item, find the best replacement fact from the Research Findings above.
+    Step 3 — Only then write the new chapter text, integrating those replacements naturally.
+
+    CRITICAL WRITING STYLE RULES:
+    - You are the ORIGINAL AUTHOR updating your own report with newer data.
+    - MATCH the original text's writing style, structure, tone, and formatting exactly.
+    - Do NOT explain how the chapter differs from the previous version.
+    - Do NOT write phrases like "this section has been updated", "unlike the previous version", "compared to the earlier report", or "in the previous edition".
+    - Simply write the updated chapter as if it were the current, authoritative version. The reader should NOT notice it was rewritten.
+    - Mirror the original text's paragraph structure, heading style, and level of detail.
+
     TASK:
     Rewrite the chapter to be modern, accurate, and professional, adhering strictly to the '{writing_style}' style.
     1. Update facts and statistics using the research findings.
-    2. Maintain the core message but adjust the tone to match the requested style.
-    3. Include inline citations like [Source: Name].
-    4. {update_instructions}
+    2. Maintain the core message, structure, and tone of the original text.
+    3. Be specific: cite exact numbers, percentages, named organizations, and years. Avoid generic claims like "the market is growing" — always quantify.
+    4. Use numbered inline citations: [1], [2], [3], etc. Each number must correspond to the index in the "references" list you provide (1-indexed). Every factual claim from research must have a citation.
+    5. {update_instructions}
     
     CRITICAL - VISUAL MARKERS:
-    - The original text contains markers like [Figure XXXXXXXX: Caption]. 
-    - You MUST preserve these markers in the appropriate context within your 'text_content'.
-    - If you suggest a NEW visual or update an existing one, you MUST insert a marker like [Figure XXXXXXXX] in the 'text_content'.
+    - The original text may contain existing figure markers with real hex IDs (e.g. [Figure 4a1b2c3d: Caption]).
+    - You MUST preserve those existing markers in the appropriate context within your 'text_content'.
+    - If you are UPDATING or RECREATING an existing visual, insert a marker using ONLY the real ID provided in the update instructions above (e.g. [Figure <actual_id>: Caption]).
+    - Do NOT invent IDs. Do NOT use placeholder text like "XXXXXXXX". Only use IDs explicitly listed in the update instructions.
+    - For BRAND-NEW visual suggestions, do NOT insert a marker in text_content — just add the suggestion to the 'visual_suggestions' list.
 
-    5. MANDATORY: Suggest at least 2 NEW visuals (graphs or search-based images) to enhance understanding.
-    6. BIBLIOGRAPHY (MANDATORY): 
-       - Provide a list of AT LEAST 5 references used in this chapter.
+    6. MANDATORY: Suggest at least 2 NEW visuals. Each must be EITHER a 'graph' (data chart) OR an 'image' (stock photo/diagram).
+       Use 'graph' when you have or can estimate specific numerical data.
+       Use 'image' for conceptual illustrations, photos, or diagrams without hard numbers.
+       CRITICAL: use EXACTLY "graph" or "image" as the type value — no other strings.
+    7. BIBLIOGRAPHY (MANDATORY): 
+       - Provide an ORDERED list of references. The order MUST match the numbered inline citations [1], [2], etc. in the text.
+       - Include an "index" field with the reference number (1, 2, 3, ...).
        - Ensure a mix of categories:
          - "Academic": For research papers, journals, or scholarly articles (if found in research).
          - "Web": For news articles, reports, and websites (from research findings).
          - "Original": For the original report content/data.
          - "Uploaded": For information from recently uploaded reference documents.
-       - IMPORTANT: If a URL was provided in the research findings, you MUST include it in the reference.
+       - ANTI-HALLUCINATION RULE (CRITICAL): You MUST NOT invent URLs. Only include a `url` field if the exact URL appears verbatim in the Research Findings section above. If no URL is available for a source, omit the `url` field entirely or set it to null.
 
     OUTPUT FORMAT (MANDATORY JSON):
     {{
-      "text_content": "The markdown-formatted text...",
-      "visual_suggestions": [ ... ],
+      "text_content": "The markdown-formatted text with [1], [2] citations...",
+      "visual_suggestions": [
+        {{
+          "type": "graph",
+          "title": "Short descriptive title",
+          "description": "What this graph shows and why it is relevant",
+          "chart_type": "bar",
+          "data_points": {{
+            "labels": ["Label A", "Label B"],
+            "values": [10, 20],
+            "unit": "USD Billions"
+          }}
+        }},
+        {{
+          "type": "image",
+          "title": "Short descriptive title",
+          "description": "What this image should show",
+          "query": "specific English DuckDuckGo search query for the image"
+        }}
+      ],
       "references": [
         {{
-          "title": "Exact Title of Source", 
-          "url": "http://...", 
-          "category": "Web" 
+          "index": 1,
+          "title": "Exact Title of Source",
+          "url": "http://...",
+          "category": "Web"
         }}
       ]
     }}

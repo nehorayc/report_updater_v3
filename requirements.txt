@@ -10,7 +10,7 @@ pdfplumber
 pymupdf
 matplotlib
 plotly
-duckduckgo-search
+ddgs
 google-generativeai
 Pillow
 # Add other dependencies as needed

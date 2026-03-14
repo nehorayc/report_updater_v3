@@ -14,9 +14,10 @@ To transform a "Chapter Blueprint" into a fully researched, high-quality report 
 ## Steps
 
 ### 1. Multi-Source Research
-- **Web Research**: Use DuckDuckGo to find recent news, statistics, and industry trends related to the `topic` and `timeframe`.
+- **Web Research**: Use DuckDuckGo to find recent news, statistics, and industry trends.
+  - After getting results, **fetch the full article body** (first 2500 chars) for each URL in parallel (5s timeout per URL). Use full body if richer than the snippet; fall back to snippet on failure.
 - **Academic/Deep Web**: Search for specialized reports or data points that add depth.
-- **Internal Context**: Query the provided "Reference Docs" for company-internal data or specific perspectives.
+- **Internal Context**: Query the provided "Reference Docs" using keyword scoring — return the top 3 matching **paragraphs** per document (not just the filename).
 
 ### 2. Information Synthesis
 - Compare findings with the **Original Text**.
@@ -25,8 +26,12 @@ To transform a "Chapter Blueprint" into a fully researched, high-quality report 
 
 ### 3. Draft Generation
 Rewrite the chapter text ensuring:
-- **Tone**: Professional, analytical, and objective.
-- **Citations**: Use `[Source: Name/URL]` for every factual claim.
+- **Tone**: Match the original text's style, tone, and structure. Write as if you are the original author updating their own report.
+- **Citations**: Use numbered inline citations `[1]`, `[2]`, etc. Each number must match the index in the ordered references list.
+- **Specificity**: Cite exact numbers, percentages, named organizations, and years. Never make generic claims — always quantify.
+- **Anti-Hallucination Rule**: Only include a URL in references if it appeared verbatim in the research findings. Never invent URLs.
+- **No Comparisons**: Do NOT explain how the chapter differs from the previous version. Write the updated chapter as if it were the current, authoritative version.
+- **Chain-of-thought**: First identify outdated claims, then find replacements in research, then write.
 - **Structure**: Clear headings and sub-headings.
 
 ### 4. Visual Ideation

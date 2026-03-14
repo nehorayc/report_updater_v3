@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import sys
+import re
 import json
 import uuid
 from datetime import datetime
@@ -67,6 +68,9 @@ if "assets" not in st.session_state:
 
 if "selected_asset_ids" not in st.session_state:
     st.session_state.selected_asset_ids = []
+
+if "original_report_name" not in st.session_state:
+    st.session_state.original_report_name = None
 
 if "debug_mode" not in st.session_state:
     st.session_state.debug_mode = True
@@ -160,12 +164,27 @@ def render_upload_extract():
                 else:
                     results = extract_docx_content(temp_path)
                 
+                # Store original report name (without extension) for output
+                original_name = os.path.splitext(uploaded_file.name)[0]
+                st.session_state.original_report_name = original_name
+                
+                # Patterns for Table of Contents chapters to exclude
+                toc_patterns = [
+                    "table of contents", "contents", "תוכן עניינים",
+                    "תוכן", "toc", "índice", "inhaltsverzeichnis"
+                ]
+                
                 st.session_state.chapters = []
                 total_ch = len(results["chapters"])
                 status = st.empty()
                 progress = st.progress(0)
                 
                 for i, ch in enumerate(results["chapters"]):
+                    # Skip Table of Contents chapters
+                    if ch['title'].strip().lower() in toc_patterns:
+                        logger.info(f"Skipping ToC chapter: '{ch['title']}'")
+                        continue
+                    
                     ch['id'] = str(uuid.uuid4())
                     
                     # Analyze Content
@@ -536,7 +555,7 @@ def render_draft_generation():
             # 3. Write Chapter
             writing_style = chapter.get('writing_style', 'Professional')
             result = write_chapter(
-                chapter['content'], 
+                chapter.get('original_full_text', chapter['content']), 
                 findings, 
                 chapter['blueprint'],
                 writing_style=writing_style,
@@ -554,34 +573,43 @@ def render_draft_generation():
                 # --- Post-process Visuals and Markers ---
                 # Ensure IDs match DocBuilder format (8-char hex) and markers exist
                 for v in visual_suggestions:
+                    # 0. Normalize type field — LLM sometimes returns variants
+                    raw_type = str(v.get('type', '')).lower()
+                    if raw_type in ('graph', 'chart', 'bar_chart', 'line_chart', 'pie_chart', 'scatter_chart', 'data'):
+                        v['type'] = 'graph'
+                    elif raw_type in ('image', 'photo', 'search_image', 'web_image', 'illustration'):
+                        v['type'] = 'image'
+                    else:
+                        v['type'] = 'graph'  # default to graph if unclear
+
+                    # Normalize query field name (LLM sometimes uses search_query instead of query)
+                    if 'search_query' in v and 'query' not in v:
+                        v['query'] = v.pop('search_query')
+
                     # 1. Assign ID if missing
                     if 'id' not in v:
                         v['id'] = uuid.uuid4().hex
-                    
+
                     short_id = v['id'][:8]
-                    
-                    # 2. Fix the marker in the text
-                    # The Writer might put "[Figure 1: ...]" but DocBuilder needs "[Figure a1b2c3d4: ...]"
+
+                    # 2. Only remap markers for existing-asset updates (not new suggestions)
+                    # New suggestions don't have markers in text per prompt instructions
                     ai_marker = v.get('marker_in_text')
-                    
                     if ai_marker and ai_marker in draft_text:
-                        # Robust replacement: preserve the caption from the AI if possible, or use description
-                        # We replace the entire AI marker with the standard format
-                        # Format: [Figure <ID>: <Caption>]
-                        # We use the description as caption for the marker
                         caption = v.get('description', 'Visual')
-                        # Truncate caption for marker if too long? No, DocBuilder takes generic text.
-                        # Actually DocBuilder Regex: r'\[(?:Figure|Asset:?)\s*([a-f0-9]{8})[:\s]*.*?\]'
-                        # It extracts the ID. The rest is just text. 
-                        # But we need to make sure the ID is there.
                         new_marker = f"[Figure {short_id}: {caption}]"
                         draft_text = draft_text.replace(ai_marker, new_marker)
                         logger.info(f"Replaced marker '{ai_marker}' with '{new_marker}'")
+                    elif ai_marker:
+                        # Marker was specified but not found — log only, don't append
+                        logger.warning(f"Marker '{ai_marker}' not found in draft text for visual '{v.get('title')}'. Visual will appear at chapter end.")
                     else:
-                        logger.warning(f"Marker '{ai_marker}' not found. Appending standard marker for {short_id}.")
-                        # Fallback: append marker to end if it got lost
-                        new_marker = f"\n\n[Figure {short_id}: {v.get('description', 'Visual')}]\n"
-                        draft_text += new_marker
+                        # Brand-new suggestion with no marker — inject one at end of chapter
+                        # so DocBuilder can locate and embed the visual.
+                        caption = v.get('title') or v.get('description', 'Figure')
+                        injected_marker = f"\n\n[Figure {short_id}: {caption}]\n"
+                        draft_text += injected_marker
+                        logger.info(f"Injected new visual marker for '{v.get('title')}' (id={short_id}) at chapter end.")
 
                 chapter['draft_text'] = draft_text
                 chapter['suggested_visuals'] = visual_suggestions
@@ -621,66 +649,93 @@ def render_draft_verification():
                         st.markdown("#### 🔄 Updates to Original Assets")
                         for v_idx, visual in enumerate(updates):
                             with st.container(border=True):
+                                # Source type badge
+                                v_type = visual.get('type', 'visual').lower()
+                                if v_type == 'graph':
+                                    st.caption("📊 **LLM-Generated Graph** (from your data)")
+                                elif v_type == 'image':
+                                    st.caption("🔍 **Web Image** (DuckDuckGo search)")
+                                else:
+                                    st.caption(f"🔄 **{v_type.capitalize()}**")
+                                
                                 st.write(f"**{visual.get('type', 'Visual').upper()}**: {visual.get('title', visual.get('description'))}")
-                                if st.checkbox("Approve Update", value=True, key=f"app_upd_{idx}_{v_idx}"):
-                                    if 'approved_visuals' not in chapter: chapter['approved_visuals'] = []
-                                    if visual not in chapter['approved_visuals']: chapter['approved_visuals'].append(visual)
+                                st.checkbox("Approve Update", value=True, key=f"app_upd_{idx}_{v_idx}")
 
                     if new_visuals:
                         st.markdown("#### ✨ New Suggestions")
                         for n_idx, visual in enumerate(new_visuals):
                             with st.container(border=True):
+                                # Source type badge
+                                v_type = visual.get('type', 'visual').lower()
+                                if v_type == 'graph':
+                                    st.caption("📊 **LLM-Generated Graph** (Matplotlib, from research data)")
+                                elif v_type == 'image':
+                                    query = visual.get('query', visual.get('description', ''))
+                                    st.caption(f"🔍 **Web Image** (DuckDuckGo search: _{query[:50]}_)")
+                                else:
+                                    st.caption(f"📋 **{v_type.capitalize()}**")
+                                
                                 st.write(f"**{visual.get('type', 'Visual').upper()}**: {visual.get('title', visual.get('description'))}")
                                 st.caption(visual.get('description'))
-                                if st.checkbox("Approve New Visual", key=f"app_new_{idx}_{n_idx}"):
-                                    if 'approved_visuals' not in chapter: chapter['approved_visuals'] = []
-                                    if visual not in chapter['approved_visuals']: chapter['approved_visuals'].append(visual)
+                                st.checkbox("Approve New Visual", key=f"app_new_{idx}_{n_idx}")
                 else:
                     st.info("No new visuals suggested.")
 
-                # Show Original Retained Assets
+                # Show Original Retained Assets — independent of above approvals
                 if 'asset_ids' in chapter:
                     # Filter for selected assets only
                     selected_original = [a for a in st.session_state.assets 
                                          if a['id'] in chapter['asset_ids'] 
                                          and a['id'] in st.session_state.selected_asset_ids]
                     
-                    # Assets that have an APPROVED update (meaning they are being replaced)
-                    approved_update_ids = [v.get('original_asset_id') for v in chapter.get('approved_visuals', []) if v.get('original_asset_id')]
-                    
-                    # Retained = Selected but not being replaced by an update
-                    retained = [a for a in selected_original if a['id'] not in approved_update_ids]
-                    
-                    if retained:
+                    if selected_original:
                          st.markdown("#### 🖼️ Retained Original Assets")
-                         for r_idx, r_asset in enumerate(retained):
+                         for r_idx, r_asset in enumerate(selected_original):
                              with st.container(border=True):
                                  sub_c1, sub_c2 = st.columns([1, 3])
                                  with sub_c1:
                                      st.image(r_asset['path'], width=60)
                                  with sub_c2:
                                      st.caption(f"**Fig {r_asset['id'][:8]}**: {r_asset.get('short_caption', 'Original Image')}")
-                                     # Default to True if it was already selected in Step 2
-                                     is_retained = st.checkbox("Keep Original in Report", value=True, key=f"retained_{idx}_{r_idx}")
-                                     
-                                     if is_retained:
-                                         if 'approved_visuals' not in chapter: chapter['approved_visuals'] = []
-                                         visual_entry = {
-                                             "type": "image",
-                                             "original_asset_id": r_asset['id'],
-                                             "path": r_asset['path'],
-                                             "title": r_asset.get('short_caption', 'Original Figure'),
-                                             "short_caption": r_asset.get('short_caption', '')
-                                         }
-                                         existing_ids = [v.get('original_asset_id') for v in chapter['approved_visuals'] if 'original_asset_id' in v]
-                                         if r_asset['id'] not in existing_ids:
-                                             chapter['approved_visuals'].append(visual_entry)
-                                     else:
-                                         if 'approved_visuals' in chapter:
-                                             chapter['approved_visuals'] = [v for v in chapter['approved_visuals'] 
-                                                                           if v.get('original_asset_id') != r_asset['id']]
+                                     st.caption("📎 **Original Asset** (from source report)")
+                                     st.checkbox("Keep Original in Report", value=True, key=f"retained_{idx}_{r_idx}")
 
     if st.button("🚀 Finalize and Assemble Report", type="primary"):
+        # Build approved_visuals from checkbox state for each chapter
+        for idx, chapter in enumerate(st.session_state.chapters):
+            chapter['approved_visuals'] = []
+            
+            if 'suggested_visuals' in chapter:
+                updates = [v for v in chapter['suggested_visuals'] if v.get('original_asset_id') or v.get('action') == 'update']
+                new_visuals = [v for v in chapter['suggested_visuals'] if v not in updates]
+                
+                for v_idx, visual in enumerate(updates):
+                    if st.session_state.get(f"app_upd_{idx}_{v_idx}", True):
+                        chapter['approved_visuals'].append(visual)
+                
+                for n_idx, visual in enumerate(new_visuals):
+                    if st.session_state.get(f"app_new_{idx}_{n_idx}", False):
+                        chapter['approved_visuals'].append(visual)
+            
+            # Add retained original assets
+            if 'asset_ids' in chapter:
+                selected_original = [a for a in st.session_state.assets 
+                                     if a['id'] in chapter['asset_ids'] 
+                                     and a['id'] in st.session_state.selected_asset_ids]
+                
+                for r_idx, r_asset in enumerate(selected_original):
+                    if st.session_state.get(f"retained_{idx}_{r_idx}", True):
+                        # Check it's not already being replaced by an approved update
+                        approved_orig_ids = [v.get('original_asset_id') for v in chapter['approved_visuals'] if v.get('original_asset_id')]
+                        if r_asset['id'] not in approved_orig_ids:
+                            chapter['approved_visuals'].append({
+                                "type": "image",
+                                "original_asset_id": r_asset['id'],
+                                "path": r_asset['path'],
+                                "title": r_asset.get('short_caption', 'Original Figure'),
+                                "short_caption": r_asset.get('short_caption', '')
+                            })
+        
         st.session_state.current_state = STATE_FINAL_ASSEMBLY
         st.rerun()
 
@@ -712,7 +767,13 @@ def render_final_assembly():
                             logger.error(f"Failed to generate visual: {res.get('error')}")
             
             status.update(label="Assembling DOCX...")
-            path = build_final_report(st.session_state.chapters, f"Modernized_Report_EN.docx")
+            report_name = st.session_state.get('original_report_name') or 'Modernized_Report'
+            output_filename = f"{report_name}.docx"
+            path = build_final_report(
+                st.session_state.chapters, 
+                output_filename,
+                title=report_name
+            )
             st.session_state.final_doc_path = path
 
     st.success("✅ Main Report (English) complete!")
@@ -745,12 +806,16 @@ def render_final_assembly():
                     # Deep copy the chapter and translate the text
                     new_ch = ch.copy()
                     new_ch['draft_text'] = translate_content(ch['draft_text'], lang)
-                    new_ch['title'] = translate_content(ch['title'], lang) # Also translate title
+                    translated_title = translate_content(ch['title'], lang)
+                    # Strip any markdown separator fences (---) the translator may have wrapped around the title
+                    translated_title = re.sub(r'^-{3,}\s*', '', translated_title.strip(), flags=re.MULTILINE).strip()
+                    new_ch['title'] = translated_title
                     translated_chapters.append(new_ch)
                 
                 status.update(label=f"Building {lang} DOCX...")
                 filename = f"Modernized_Report_{lang}.docx"
-                path = build_final_report(translated_chapters, filename)
+                report_name = st.session_state.get('original_report_name') or 'Modernized_Report'
+                path = build_final_report(translated_chapters, filename, title=report_name)
                 st.session_state.translated_reports[lang] = path
     
     if "translated_reports" in st.session_state:

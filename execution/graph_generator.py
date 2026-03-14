@@ -1,19 +1,192 @@
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend, must be set before pyplot import
 import matplotlib.pyplot as plt
 import os
 import uuid
 import base64
 from io import BytesIO
+import google.generativeai as genai
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from logger_config import setup_logger
 import time
 
 logger = setup_logger("GraphGenerator")
 
+# Professional color palette for static fallback
+_CORP_COLORS = ['#2563EB', '#16A34A', '#DC2626', '#D97706', '#7C3AED', '#0891B2']
+
+# Apply professional style to static charts
+try:
+    plt.style.use('seaborn-v0_8-whitegrid')
+except OSError:
+    plt.style.use('ggplot')  # Fallback if seaborn not available
+
+# Builtins that are NOT safe to expose to LLM-generated code
+_UNSAFE_BUILTINS = {
+    'open', 'exec', 'eval', 'compile',
+    'input', 'breakpoint', 'memoryview',
+    '__loader__', '__spec__',
+}
+
+# Only these top-level module names may be imported by LLM-generated code
+_ALLOWED_IMPORT_PREFIXES = {
+    'matplotlib', 'numpy', 'math', 'statistics', 'collections',
+    'itertools', 'functools', 'operator', 'textwrap', 'datetime',
+    'random', 'io', 'colorsys', 'scipy', 'pandas',
+}
+
+
+def _safe_import(name, *args, **kwargs):
+    """Wraps __import__ to only permit safe scientific/plotting modules."""
+    top = name.split('.')[0]
+    if top not in _ALLOWED_IMPORT_PREFIXES:
+        raise ImportError(f"Import of '{name}' is not allowed in graph code sandbox.")
+    return __import__(name, *args, **kwargs)
+
+
+def _make_safe_globals() -> dict:
+    """
+    Returns a globals dict for exec() that allows all standard Python builtins
+    EXCEPT those that could access the filesystem, network, or execute arbitrary code.
+    __import__ is replaced with a sandboxed version that only allows safe modules.
+    """
+    import builtins
+    safe_builtins = {
+        k: v for k, v in vars(builtins).items()
+        if k not in _UNSAFE_BUILTINS
+    }
+    # Replace __import__ with the sandboxed version
+    safe_builtins['__import__'] = _safe_import
+    return {"__builtins__": safe_builtins}
+
+
+def generate_graph_with_llm(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
+    """
+    Uses Gemini to write a Matplotlib Python script for the given visual,
+    then executes it safely. Returns {'path': ...} on success, {'error': ...} on failure.
+    Includes one retry if the code runs but produces no file (path mismatch).
+    """
+    logger.info(f"Attempting LLM-based graph generation for: '{visual_dict.get('title')}'")
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        logger.warning("GEMINI_API_KEY not found, skipping LLM graph generation.")
+        return {"error": "No API key"}
+
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    filename = f"graph_{uuid.uuid4().hex}.png"
+    output_path = os.path.abspath(os.path.join(output_dir, filename)).replace("\\", "/")
+
+    title = visual_dict.get("title", "Data Visualization")
+    description = visual_dict.get("description", "")
+    data = visual_dict.get("data_points", {})
+    chart_type = visual_dict.get("chart_type", "bar")
+
+    def _build_prompt(previous_code: str = "") -> str:
+        retry_note = ""
+        if previous_code:
+            retry_note = f"""
+IMPORTANT: The previous attempt below ran without error but did NOT save a file to the expected path.
+You MUST fix the save path. Do not change any other logic.
+
+Previous (broken) code:
+{previous_code}
+
+"""
+        return f"""{retry_note}Write a self-contained Python script using Matplotlib that creates a professional chart.
+
+Chart details:
+- Title: {title}
+- Description: {description}
+- Chart type (suggested): {chart_type}
+- Data: {data}
+- Output path: {output_path}
+
+REQUIREMENTS:
+1. Import all necessary libraries (matplotlib, numpy if needed).
+2. Use plt.style.use('seaborn-v0_8-whitegrid') or 'ggplot' as fallback.
+3. Use a professional color palette (e.g. #2563EB, #16A34A, #DC2626).
+4. Set DPI=200, figure size=(12, 7).
+5. Add clear title, axis labels with units if inferable, and a legend if multi-series.
+6. Rotate x-tick labels 45 degrees if there are more than 4 categories.
+7. Call plt.tight_layout() before saving.
+8. Save to EXACTLY this path: {output_path}
+9. Call plt.close() at the end.
+10. Do NOT use plt.show().
+11. Choose the best chart type for the data (line for trends, bar for comparisons, pie for proportions, etc.)
+
+Respond with ONLY the executable Python code. No explanations, no markdown fences.
+"""
+
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-2.5-flash')
+
+    def _try_exec(prompt: str) -> tuple:
+        """Returns (code, result_dict)."""
+        start = time.time()
+        response = model.generate_content(prompt)
+        logger.info(f"LLM code generated in {time.time()-start:.2f}s")
+
+        code = response.text.strip()
+        # Strip markdown fences if present despite instructions
+        if code.startswith("```"):
+            code = code.split("```")[1]
+            if code.startswith("python"):
+                code = code[6:]
+            if "```" in code:
+                code = code[:code.rfind("```")]
+        code = code.strip()
+
+        logger.debug(f"LLM generated code:\n{code[:500]}...")
+
+        safe_globals = _make_safe_globals()
+        exec(code, safe_globals)  # nosec
+
+        if os.path.exists(output_path):
+            logger.info(f"LLM-generated graph saved to: {output_path}")
+            return code, {"path": output_path, "filename": filename}
+        else:
+            logger.warning(f"LLM code ran but no file found at: {output_path}")
+            return code, {"error": "Code ran but no file was produced"}
+
+    try:
+        # First attempt
+        code, result = _try_exec(_build_prompt())
+        if "path" in result:
+            return result
+
+        # Bug 2 fix: one retry with explicit path correction prompt
+        logger.info("Retrying with path-correction prompt...")
+        _, result = _try_exec(_build_prompt(previous_code=code))
+        if "path" in result:
+            return result
+
+        return {"error": "LLM code ran twice but no output file produced"}
+
+    except Exception as e:
+        logger.error(f"LLM graph generation failed: {e}", exc_info=True)
+        return {"error": str(e)}
+
+
 def generate_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
     """
-    Generated a graph image using matplotlib based on a visual suggestion.
+    Generates a graph image. Tries LLM-based generation first (any chart type,
+    professional styling). Falls back to static chart on failure.
+    Static fallback supports bar, line, and pie chart types.
     """
     logger.info(f"Starting graph generation: '{visual_dict.get('title')}'")
+
+    # --- Try LLM-based generation first ---
+    llm_result = generate_graph_with_llm(visual_dict, output_dir)
+    if "path" in llm_result:
+        return llm_result
+    logger.warning(f"LLM graph failed ({llm_result.get('error')}), falling back to static chart.")
+
+    # --- Static fallback ---
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
@@ -21,6 +194,8 @@ def generate_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
     data = visual_dict.get("data_points", {})
     labels = data.get("labels", [])
     values = data.get("values", [])
+    unit = data.get("unit", "")
+    chart_type = visual_dict.get("chart_type", "bar").lower()
 
     if not labels or not values:
         logger.warning(f"Insufficient data for graph '{title}': labels={len(labels)}, values={len(values)}")
@@ -28,85 +203,106 @@ def generate_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
 
     start_time = time.time()
     try:
-        plt.figure(figsize=(10, 6))
-        
-        # Handle cases where values is a dict (multi-series)
+        fig, ax = plt.subplots(figsize=(12, 7))
+
+        # --- Bug 6 fix: route by chart_type ---
+
+        # Handle multi-series dict values (applies to bar and line)
         if isinstance(values, dict):
-            # Create a simple multi-bar chart or line chart
-            # For simplicity, if we have multiple series, we'll plot them
             import numpy as np
             x = np.arange(len(labels))
-            # Protect against empty values dict to avoid division by zero
-            num_series = len(values) if len(values) > 0 else 1
+            num_series = max(len(values), 1)
             width = 0.8 / num_series
             multiplier = 0
 
-            for attribute, measurement in values.items():
+            for idx, (attribute, measurement) in enumerate(values.items()):
                 offset = width * multiplier
-                
-                # Handle nested dicts (e.g. {"Series A": {"2021": 10, ...}})
+                color = _CORP_COLORS[idx % len(_CORP_COLORS)]
+
                 if isinstance(measurement, dict):
-                    # Align with labels
                     aligned_data = []
                     for label in labels:
-                        # Try exact match or string match
-                        val = measurement.get(label)
-                        if val is None:
-                            val = measurement.get(str(label), 0)
+                        val = measurement.get(label) or measurement.get(str(label), 0)
                         aligned_data.append(val)
                     measurement = aligned_data
 
-                # Ensure measurement matches labels length
                 if len(measurement) != len(labels):
-                    logger.warning(f"Data mismatch for {attribute}: {len(measurement)} values vs {len(labels)} labels. Truncating/Padding.")
-                    # Ensure measurement is a list before slicing/padding
+                    logger.warning(f"Data mismatch for {attribute}: truncating/padding.")
                     if not isinstance(measurement, list):
                         measurement = [measurement]
-                    measurement = measurement[:len(labels)] + [0]*(len(labels)-len(measurement))
-                
-                # Ensure all values are numeric
+                    measurement = measurement[:len(labels)] + [0] * (len(labels) - len(measurement))
+
                 try:
-                    measurement = [float(x) if x is not None else 0 for x in measurement]
+                    measurement = [float(v) if v is not None else 0 for v in measurement]
                 except (ValueError, TypeError):
-                    logger.warning(f"Non-numeric data in {attribute}, coercing to 0.")
                     measurement = [0] * len(labels)
 
-                plt.bar(x + offset, measurement, width, label=attribute)
+                if chart_type == "line":
+                    ax.plot(x, measurement, marker='o', label=attribute, color=color, linewidth=2)
+                else:
+                    ax.bar(x + offset, measurement, width, label=attribute, color=color)
                 multiplier += 1
 
-            plt.xticks(x + width * (num_series - 1) / 2, labels, rotation=45, ha='right')
-            plt.legend(loc='upper left', ncols=3)
-        
-        else:
-            # Standard single series bar chart
-            plt.bar(labels, values, color='skyblue')
-            plt.xticks(rotation=45, ha='right')
+            ax.set_xticks(x + width * (num_series - 1) / 2 if chart_type != "line" else x)
+            ax.set_xticklabels(labels, rotation=45, ha='right')
+            ax.legend(loc='upper left')
 
-        plt.title(title)
-        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        elif chart_type == "pie":
+            # Pie chart: ignore labels/values mismatch gracefully
+            try:
+                float_vals = [float(v) if v is not None else 0 for v in values]
+            except (ValueError, TypeError):
+                float_vals = [1] * len(labels)
+            colors = _CORP_COLORS[:len(labels)]
+            ax.pie(float_vals, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
+            ax.axis('equal')
+
+        elif chart_type == "line":
+            try:
+                float_vals = [float(v) if v is not None else 0 for v in values]
+            except (ValueError, TypeError):
+                float_vals = [0] * len(labels)
+            ax.plot(labels, float_vals, marker='o', color=_CORP_COLORS[0], linewidth=2.5, markersize=6)
+            ax.set_xticklabels(labels, rotation=45 if len(labels) > 4 else 0, ha='right')
+            ax.fill_between(labels, float_vals, alpha=0.1, color=_CORP_COLORS[0])
+
+        else:
+            # Default: bar chart (single series)
+            colors = _CORP_COLORS[:len(labels)]
+            ax.bar(labels, values, color=colors)
+            ax.set_xticklabels(labels, rotation=45 if len(labels) > 4 else 0, ha='right')
+
+        ax.set_title(title, fontsize=14, fontweight='bold', pad=15)
+        if unit and chart_type != "pie":
+            ax.set_ylabel(unit)
+        if chart_type != "pie":
+            ax.grid(axis='y', linestyle='--', alpha=0.7)
         plt.tight_layout()
-        
+
         filename = f"graph_{uuid.uuid4().hex}.png"
         path = os.path.join(output_dir, filename)
-        plt.savefig(path)
+        plt.savefig(path, dpi=200)
         plt.close()
 
-        latency = time.time() - start_time
-        logger.info(f"Graph '{title}' generated successfully in {latency:.2f}s at {path}")
-        return {
-            "path": path,
-            "filename": filename
-        }
+        logger.info(f"Static graph '{title}' ({chart_type}) generated in {time.time()-start_time:.2f}s at {path}")
+        return {"path": path, "filename": filename}
+
     except Exception as e:
-        logger.error(f"Error generating graph '{title}': {e}", exc_info=True)
+        logger.error(f"Error generating static graph '{title}': {e}", exc_info=True)
+        plt.close()
         return {"error": str(e)}
 
-# Note: In a more advanced version, we would use an LLM to generate the code 
-# and then execute it in a sandbox. For v1, we'll use a standardized bar chart.
 
 if __name__ == "__main__":
     test_visual = {
-        "title": "Projected Growth",
-        "data_points": {"labels": ["2022", "2023", "2024"], "values": [100, 150, 220]}
+        "title": "Projected AI Market Growth",
+        "description": "Line chart showing AI market size in billions USD from 2022 to 2027",
+        "chart_type": "line",
+        "data_points": {
+            "labels": ["2022", "2023", "2024", "2025", "2026", "2027"],
+            "values": [100, 150, 220, 310, 420, 560],
+            "unit": "USD Billions"
+        }
     }
-    print(generate_graph(test_visual))
+    result = generate_graph(test_visual)
+    print(result)
