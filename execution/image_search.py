@@ -1,4 +1,4 @@
-from ddgs import DDGS
+from duckduckgo_search import DDGS
 import requests
 import os
 import uuid

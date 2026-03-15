@@ -5,6 +5,8 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 import os
 import re
+import zipfile
+import shutil
 from datetime import datetime
 from typing import List, Dict
 from logger_config import setup_logger
@@ -149,37 +151,45 @@ class ReportBuilder:
             if not line:
                 continue
                 
-            # Handle Markers first (Special case) — support 8 to 32 hex char IDs
-            marker_regex = r'\[(?:Figure|Asset:?)\s*([a-f0-9]{8,32})[:\s]*.*?\]'
-            if re.search(marker_regex, line, re.IGNORECASE):
+            # Handle Markers first (Special case) — support 8 to 32 alphanumeric char IDs
+            marker_pattern = r'\[(?:Figure|Asset:?)\s*([a-zA-Z0-9]{8,32})[:\s]*.*?\]'
+            if re.search(marker_pattern, line, re.IGNORECASE):
                 # If we have a marker in the line, we process it specifically
-                parts = re.split(f'({marker_regex})', line, flags=re.IGNORECASE)
+                # We use a non-capturing group for the inner elements and capture the WHOLE tag to split cleanly
+                split_pattern = r'(\[(?:Figure|Asset:?)\s*[a-zA-Z0-9]{8,32}[:\s]*.*?\])'
+                parts = re.split(split_pattern, line, flags=re.IGNORECASE)
                 p = self.doc.add_paragraph()
                 for part in parts:
                     if not part: continue
-                    match = re.match(marker_regex, part, re.IGNORECASE)
+                    match = re.match(marker_pattern, part, re.IGNORECASE)
                     if match:
                         asset_id_short = match.group(1).lower()
-                        if asset_id_short in visual_map:
-                            v = visual_map[asset_id_short]
-                            if 'path' in v and os.path.exists(v['path']):
-                                try:
-                                    img_p = self.doc.add_paragraph()
-                                    img_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                                    img_p.add_run().add_picture(v['path'], width=Inches(5))
-                                    cap_text = f"Figure: {v.get('title', v.get('short_caption', 'Visual'))}"
-                                    cap = self.doc.add_paragraph(cap_text)
-                                    cap.style = 'Caption'
-                                    cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                                    self._set_rtl_if_hebrew(cap, cap_text)
-                                except Exception as e:
-                                    logger.error(f"Failed to add picture {v['path']} to document: {e}")
-                                    # Remove the empty paragraph if we couldn't add the picture
-                                    # Actually, just leave it or don't worry about it. 
-                                    # But let's try to be clean.
-                                    pass
+                        v = visual_map.get(asset_id_short)
+                        img_path = v.get('path') if v else None
+                        cap_text = f"Figure: {v.get('title', v.get('short_caption', 'Visual'))}" if v else f"Figure {asset_id_short}"
+
+                        if not (img_path and os.path.exists(img_path)):
+                            import glob
+                            possible = glob.glob(f".tmp/**/*{asset_id_short}*.*", recursive=True)
+                            for p_path in possible:
+                                if p_path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
+                                    img_path = p_path
+                                    break
+
+                        if img_path and os.path.exists(img_path):
+                            try:
+                                img_p = self.doc.add_paragraph()
+                                img_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                                img_p.add_run().add_picture(img_path, width=Inches(5))
+                                cap = self.doc.add_paragraph(cap_text)
+                                cap.style = 'Caption'
+                                cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                                self._set_rtl_if_hebrew(cap, cap_text)
+                            except Exception as e:
+                                logger.error(f"Failed to add picture {img_path} to document: {e}")
+                                pass
                         else:
-                            logger.warning(f"Visual marker found for ID '{asset_id_short}' but no matching visual in map. Keys: {list(visual_map.keys())}")
+                            logger.warning(f"Visual marker found for ID '{asset_id_short}' but no matching visual found.")
                             p.add_run(part)
                     else:
                         self._add_markdown_runs(p, part)
@@ -318,6 +328,146 @@ def build_final_report(chapters: List[Dict], output_path: str = "Modernized_Repo
     builder.add_bibliography(ordered_refs)
     
     return builder.save(output_path)
+
+def build_markdown_report(chapters: List[Dict], output_path: str = "Modernized_Report.md", title: str = None) -> str:
+    report_title = title or "Modernized Industry Report"
+    logger.info(f"Starting build_markdown_report for {len(chapters)} chapters. Title: '{report_title}'")
+    
+    md_content = []
+    
+    # Create export directory for markdown and images
+    base_name = os.path.splitext(output_path)[0]
+    export_dir = f"{base_name}_export"
+    images_dir = os.path.join(export_dir, "images")
+    os.makedirs(images_dir, exist_ok=True)
+    
+    output_md_path = os.path.join(export_dir, os.path.basename(output_path))
+    
+    # Cover & TOC omitted in simple markdown, just title
+    md_content.append(f"# {report_title}\n")
+    md_content.append(f"_Updated and Researched via AI Agent | Date: {datetime.now().strftime('%Y-%m-%d')}_\n\n")
+    
+    all_refs = []
+    
+    for ch in chapters:
+        md_content.append(f"# {ch['title']}\n")
+        
+        visual_map = {}
+        if ch.get('approved_visuals'):
+            for v in ch['approved_visuals']:
+                vid = v.get('id', '')
+                if vid:
+                    visual_map[vid[:8].lower()] = v
+                orig_id = v.get('original_asset_id', '')
+                if orig_id:
+                    visual_map[orig_id[:8].lower()] = v
+        
+        text = ch['draft_text']
+        placeholder_regex = r'\[(?:Figure|Asset:?)\s*X{4,}[:\s]*.*?\]'
+        text = re.sub(placeholder_regex, '', text, flags=re.IGNORECASE)
+        
+        lines = text.split('\n')
+        for line in lines:
+            line = line.strip()
+            if not line:
+                md_content.append("")
+                continue
+                
+            marker_pattern = r'\[(?:Figure|Asset:?)\s*([a-zA-Z0-9]{8,32})[:\s]*.*?\]'
+            if re.search(marker_pattern, line, re.IGNORECASE):
+                split_pattern = r'(\[(?:Figure|Asset:?)\s*[a-zA-Z0-9]{8,32}[:\s]*.*?\])'
+                parts = re.split(split_pattern, line, flags=re.IGNORECASE)
+                out_line = ""
+                for part in parts:
+                    if not part: continue
+                    match = re.match(marker_pattern, part, re.IGNORECASE)
+                    if match:
+                        asset_id_short = match.group(1).lower()
+                        v = visual_map.get(asset_id_short)
+                        img_path = v.get('path') if v else None
+                        cap_text = f"Figure: {v.get('title', v.get('short_caption', 'Visual'))}" if v else f"Figure {asset_id_short}"
+
+                        if not (img_path and os.path.exists(img_path)):
+                            import glob
+                            possible = glob.glob(f".tmp/**/*{asset_id_short}*.*", recursive=True)
+                            for p_path in possible:
+                                if p_path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
+                                    img_path = p_path
+                                    break
+
+                        if img_path and os.path.exists(img_path):
+                            try:
+                                img_ext = os.path.splitext(img_path)[1]
+                                if not img_ext:
+                                    img_ext = ".png" # fallback
+                                dest_img_name = f"{asset_id_short}{img_ext}"
+                                dest_img_path = os.path.join(images_dir, dest_img_name)
+                                shutil.copy2(img_path, dest_img_path)
+                                rel_path = f"images/{dest_img_name}"
+                            except Exception as e:
+                                logger.error(f"Error copying image {img_path}: {e}")
+                                rel_path = img_path # fallback
+                            out_line += f"\n\n![{cap_text}]({rel_path})\n*{cap_text}*\n\n"
+                        else:
+                            out_line += part
+                    else:
+                        out_line += part
+                md_content.append(out_line)
+                continue
+            
+            md_content.append(line)
+        
+        md_content.append("\n---\n")
+        
+        if 'references' in ch:
+            all_refs.extend(ch['references'])
+            
+    seen_titles = set()
+    ordered_refs = []
+    for r in all_refs:
+        if r['title'] not in seen_titles:
+            seen_titles.add(r['title'])
+            ordered_refs.append(r)
+            
+    for i, ref in enumerate(ordered_refs):
+        if 'index' not in ref:
+            ref['index'] = i + 1
+            
+    if ordered_refs:
+        md_content.append("# Bibliography\n")
+        for ref in ordered_refs:
+            idx = ref.get('index', ordered_refs.index(ref) + 1)
+            title = ref.get('title', 'Unknown Source')
+            url = ref.get('url', '')
+            category = ref.get('category', '')
+            ref_line = f"**[{idx}] {title}**"
+            if url and url.startswith('http'):
+                ref_line += f" — {url}"
+            if category:
+                ref_line += f"  _({category})_"
+            md_content.append(ref_line)
+            
+    try:
+        with open(output_md_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(md_content))
+            
+        zip_output_path = f"{base_name}.zip"
+        with zipfile.ZipFile(zip_output_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            # Add markdown file
+            zipf.write(output_md_path, arcname=os.path.basename(output_md_path))
+            
+            # Add images
+            for root, _, files in os.walk(images_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = f"images/{file}"
+                    zipf.write(file_path, arcname=arcname)
+                    
+        logger.info(f"Markdown report zipped and saved to: {zip_output_path}")
+        return zip_output_path
+    except Exception as e:
+        logger.error(f"Failed to generate Markdown report: {e}")
+        return output_path
 
 if __name__ == "__main__":
     test_chapters = [

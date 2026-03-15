@@ -36,6 +36,7 @@ def translate_content(text: str, target_lang: str) -> str:
     3. Maintain the professional tone of the original.
     4. If the text contains Hebrew and it looks reversed or garbled, correct it for natural reading order in the translation.
     5. Translate tables carefully, maintaining the markdown structure.
+    6. DO NOT include page numbers, headers, or footers from the original text in the translation.
     
     TEXT TO TRANSLATE:
     ---

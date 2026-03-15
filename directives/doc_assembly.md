@@ -37,7 +37,8 @@ To ensure the final exported DOCX is professional, readable, and structurally so
 - **Logo**: If a corporate logo is provided (State 1), it should appear in the header of the first page.
 
 ## Export Requirements
-- Filename: Preserve the original uploaded document's filename (e.g., `OriginalName.docx`).
-- Must be valid OpenXML (.docx) format.
+- Filename: Preserve the original uploaded document's filename (e.g., `OriginalName.docx` and `OriginalName.zip`).
+- Must be valid OpenXML (.docx) format for the main report.
+- Markdown exports must be packaged as a ZIP containing the `.md` file and an `images/` directory to prevent broken links.
 - All temporary files in `.tmp/` must be cleaned up post-export (except for the final artifact).
 

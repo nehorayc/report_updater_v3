@@ -5,12 +5,11 @@ openpyxl
 requests
 beautifulsoup4
 python-dotenv
-googlesearch-python
 pdfplumber
 pymupdf
 matplotlib
 plotly
-ddgs
+duckduckgo-search
 google-generativeai
 Pillow
 # Add other dependencies as needed

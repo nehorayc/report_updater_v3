@@ -592,24 +592,27 @@ def render_draft_generation():
 
                     short_id = v['id'][:8]
 
-                    # 2. Only remap markers for existing-asset updates (not new suggestions)
-                    # New suggestions don't have markers in text per prompt instructions
-                    ai_marker = v.get('marker_in_text')
-                    if ai_marker and ai_marker in draft_text:
-                        caption = v.get('description', 'Visual')
-                        new_marker = f"[Figure {short_id}: {caption}]"
-                        draft_text = draft_text.replace(ai_marker, new_marker)
-                        logger.info(f"Replaced marker '{ai_marker}' with '{new_marker}'")
-                    elif ai_marker:
-                        # Marker was specified but not found — log only, don't append
-                        logger.warning(f"Marker '{ai_marker}' not found in draft text for visual '{v.get('title')}'. Visual will appear at chapter end.")
-                    else:
-                        # Brand-new suggestion with no marker — inject one at end of chapter
-                        # so DocBuilder can locate and embed the visual.
-                        caption = v.get('title') or v.get('description', 'Figure')
-                        injected_marker = f"\n\n[Figure {short_id}: {caption}]\n"
-                        draft_text += injected_marker
-                        logger.info(f"Injected new visual marker for '{v.get('title')}' (id={short_id}) at chapter end.")
+                    # 2. Check if a marker for this ID already exists (from new prompt instructions)
+                    marker_exists = bool(re.search(r'\[(?:Figure|Asset:?)\s*' + re.escape(short_id) + r'[:\s\]]', draft_text, re.IGNORECASE))
+
+                    if not marker_exists:
+                        # 3. Handle older logic or replacements
+                        ai_marker = v.get('marker_in_text')
+                        if ai_marker and ai_marker in draft_text:
+                            caption = v.get('description', 'Visual')
+                            new_marker = f"[Figure {short_id}: {caption}]"
+                            draft_text = draft_text.replace(ai_marker, new_marker)
+                            logger.info(f"Replaced marker '{ai_marker}' with '{new_marker}'")
+                        elif ai_marker:
+                            # Marker was specified but not found — log only, don't append
+                            logger.warning(f"Marker '{ai_marker}' not found in draft text for visual '{v.get('title')}'. Visual will appear at chapter end.")
+                        else:
+                            # Brand-new suggestion with no marker — inject one at end of chapter
+                            # so DocBuilder can locate and embed the visual.
+                            caption = v.get('title') or v.get('description', 'Figure')
+                            injected_marker = f"\n\n[Figure {short_id}: {caption}]\n"
+                            draft_text += injected_marker
+                            logger.info(f"Injected new visual marker for '{v.get('title')}' (id={short_id}) at chapter end.")
 
                 chapter['draft_text'] = draft_text
                 chapter['suggested_visuals'] = visual_suggestions
@@ -624,7 +627,7 @@ def render_draft_generation():
 
 from graph_generator import generate_graph
 from image_search import search_and_download_image
-from doc_builder import build_final_report
+from doc_builder import build_final_report, build_markdown_report
 
 def render_draft_verification():
     st.header("5. Verification & Refinement")
@@ -769,6 +772,7 @@ def render_final_assembly():
             status.update(label="Assembling DOCX...")
             report_name = st.session_state.get('original_report_name') or 'Modernized_Report'
             output_filename = f"{report_name}.docx"
+            output_md_filename = f"{report_name}.md"
             path = build_final_report(
                 st.session_state.chapters, 
                 output_filename,
@@ -776,12 +780,27 @@ def render_final_assembly():
             )
             st.session_state.final_doc_path = path
 
+            status.update(label="Assembling Markdown...")
+            md_path = build_markdown_report(
+                st.session_state.chapters,
+                output_md_filename,
+                title=report_name
+            )
+            st.session_state.final_md_path = md_path
+
     st.success("✅ Main Report (English) complete!")
     col1, col2 = st.columns(2)
     with col1:
         if os.path.exists(st.session_state.final_doc_path):
             with open(st.session_state.final_doc_path, "rb") as f:
-                st.download_button("📥 Download Report (English)", data=f, file_name=os.path.basename(st.session_state.final_doc_path), type="primary")
+                st.download_button("📥 Download Report (DOCX)", data=f, file_name=os.path.basename(st.session_state.final_doc_path), type="primary")
+    with col2:
+        if "final_md_path" in st.session_state and os.path.exists(st.session_state.final_md_path):
+            md_file_path = st.session_state.final_md_path
+            is_zip = md_file_path.endswith('.zip')
+            btn_text = "📥 Download Report (MD + Images ZIP)" if is_zip else "📥 Download Report (Markdown)"
+            with open(md_file_path, "rb") as f:
+                st.download_button(btn_text, data=f, file_name=os.path.basename(md_file_path), type="secondary")
 
     st.divider()
     

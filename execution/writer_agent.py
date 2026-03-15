@@ -85,8 +85,10 @@ def write_chapter(original_text: str, research_findings: List[Dict], blueprint: 
     - The original text may contain existing figure markers with real hex IDs (e.g. [Figure 4a1b2c3d: Caption]).
     - You MUST preserve those existing markers in the appropriate context within your 'text_content'.
     - If you are UPDATING or RECREATING an existing visual, insert a marker using ONLY the real ID provided in the update instructions above (e.g. [Figure <actual_id>: Caption]).
-    - Do NOT invent IDs. Do NOT use placeholder text like "XXXXXXXX". Only use IDs explicitly listed in the update instructions.
-    - For BRAND-NEW visual suggestions, do NOT insert a marker in text_content — just add the suggestion to the 'visual_suggestions' list.
+    - Do NOT use placeholder text like "XXXXXXXX".
+    - For BRAND-NEW visual suggestions, you MUST invent a random 8-character hex ID (e.g. a1b2c3d4) for each one.
+    - You MUST insert a marker for your new visual directly in the text where it belongs using the format [Figure <invented_id>: Caption].
+    - You MUST include this same exact <invented_id> in the 'id' field of the JSON object in the 'visual_suggestions' list.
 
     6. MANDATORY: Suggest at least 2 NEW visuals. Each must be EITHER a 'graph' (data chart) OR an 'image' (stock photo/diagram).
        Use 'graph' when you have or can estimate specific numerical data.
@@ -107,6 +109,7 @@ def write_chapter(original_text: str, research_findings: List[Dict], blueprint: 
       "text_content": "The markdown-formatted text with [1], [2] citations...",
       "visual_suggestions": [
         {{
+          "id": "a1b2c3d4",
           "type": "graph",
           "title": "Short descriptive title",
           "description": "What this graph shows and why it is relevant",

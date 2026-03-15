@@ -31,6 +31,7 @@ Rewrite the chapter text ensuring:
 - **Specificity**: Cite exact numbers, percentages, named organizations, and years. Never make generic claims — always quantify.
 - **Anti-Hallucination Rule**: Only include a URL in references if it appeared verbatim in the research findings. Never invent URLs.
 - **No Comparisons**: Do NOT explain how the chapter differs from the previous version. Write the updated chapter as if it were the current, authoritative version.
+- **No Page Numbers**: Do NOT include page numbers, headers, or footers from the original text in the rewritten output (e.g., ":עמודים1 17/").
 - **Chain-of-thought**: First identify outdated claims, then find replacements in research, then write.
 - **Structure**: Clear headings and sub-headings.
 
