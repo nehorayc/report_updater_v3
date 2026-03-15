@@ -67,16 +67,18 @@ def write_chapter(original_text: str, research_findings: List[Dict], blueprint: 
 
     CRITICAL WRITING STYLE RULES:
     - You are the ORIGINAL AUTHOR updating your own report with newer data.
-    - MATCH the original text's writing style, structure, tone, and formatting exactly.
+    - DETECT THE LANGUAGE of the Original Report Chapter Text. You MUST write the ENTIRE updated chapter in that exact same language to maintain the original writer's style.
+    - Adopt the original text's professional tone, but SYNTHESIZE the new research and original insights into a fresh narrative.
+    - FOCUS HEAVILY ON THE NEW RESEARCH. The majority of the updated chapter should be driven by the facts, statistics, and developments found in the Research Findings. Use the Original Text primarily for historical context or foundational concepts, but let the new data lead the narrative.
+    - Do NOT copy-paste sentences from the original text. Rewrite completely to seamlessly integrate the new research, organically structuring paragraphs as needed.
+    - Ensure the final output reads as a newly authored, up-to-date chapter rather than a patched version of the old text.
     - Do NOT explain how the chapter differs from the previous version.
     - Do NOT write phrases like "this section has been updated", "unlike the previous version", "compared to the earlier report", or "in the previous edition".
-    - Simply write the updated chapter as if it were the current, authoritative version. The reader should NOT notice it was rewritten.
-    - Mirror the original text's paragraph structure, heading style, and level of detail.
 
     TASK:
     Rewrite the chapter to be modern, accurate, and professional, adhering strictly to the '{writing_style}' style.
-    1. Update facts and statistics using the research findings.
-    2. Maintain the core message, structure, and tone of the original text.
+    1. Synthesize the new research findings and original text into a cohesive, updated narrative.
+    2. Prioritize the new research findings over the original text content.
     3. Be specific: cite exact numbers, percentages, named organizations, and years. Avoid generic claims like "the market is growing" — always quantify.
     4. Use numbered inline citations: [1], [2], [3], etc. Each number must correspond to the index in the "references" list you provide (1-indexed). Every factual claim from research must have a citation.
     5. {update_instructions}

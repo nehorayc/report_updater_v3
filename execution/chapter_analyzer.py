@@ -40,6 +40,7 @@ def analyze_chapter_content(title: str, text: str) -> Dict[str, Any]:
     TASK:
     1. SUMMARY: Write a concise summary (1-2 paragraphs) of the key points, arguments, and data in this chapter. This summary will be used by a researcher to find updated information.
     2. KEYWORDS: Extract 5-10 specific, high-value search keywords or short phrases that would help a researcher find UPDATED information on this topic (e.g., instead of "Market", use "AI Market Size 2025").
+    3. LANGUAGE MATCHING: Detect the language of the CHAPTER TEXT. Your summary and keywords MUST be written in that exact same language.
 
     OUTPUT FORMAT (MANDATORY JSON):
     {{

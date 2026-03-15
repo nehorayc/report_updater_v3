@@ -343,6 +343,8 @@ def render_asset_selection():
                          marker = f"[Asset: {u_id[:8]}]"
                          if marker in chapter['content']:
                              chapter['content'] = chapter['content'].replace(marker, "")
+                         if 'original_full_text' in chapter and marker in chapter['original_full_text']:
+                             chapter['original_full_text'] = chapter['original_full_text'].replace(marker, "")
                 
                 logger.info(f"Removed markers for {len(unselected_ids)} unselected assets from chapters.")
 
@@ -796,14 +798,16 @@ def render_final_assembly():
     with col1:
         if os.path.exists(st.session_state.final_doc_path):
             with open(st.session_state.final_doc_path, "rb") as f:
-                st.download_button("📥 Download Report (DOCX)", data=f, file_name=os.path.basename(st.session_state.final_doc_path), type="primary")
+                doc_bytes = f.read()
+            st.download_button("📥 Download Report (DOCX)", data=doc_bytes, file_name=os.path.basename(st.session_state.final_doc_path), type="primary")
     with col2:
         if "final_md_path" in st.session_state and os.path.exists(st.session_state.final_md_path):
             md_file_path = st.session_state.final_md_path
             is_zip = md_file_path.endswith('.zip')
             btn_text = "📥 Download Report (MD + Images ZIP)" if is_zip else "📥 Download Report (Markdown)"
             with open(md_file_path, "rb") as f:
-                st.download_button(btn_text, data=f, file_name=os.path.basename(md_file_path), type="secondary")
+                md_bytes = f.read()
+            st.download_button(btn_text, data=md_bytes, file_name=os.path.basename(md_file_path), type="secondary")
 
     st.divider()
     
@@ -847,7 +851,8 @@ def render_final_assembly():
         for lang, path in st.session_state.translated_reports.items():
             if os.path.exists(path):
                 with open(path, "rb") as f:
-                    st.download_button(f"📥 Download Report ({lang})", data=f, file_name=os.path.basename(path))
+                    translation_bytes = f.read()
+                st.download_button(f"📥 Download Report ({lang})", data=translation_bytes, file_name=os.path.basename(path))
 
     st.divider()
     if st.button("🔄 Start New Report"):

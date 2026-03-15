@@ -168,7 +168,7 @@ class ReportBuilder:
                         img_path = v.get('path') if v else None
                         cap_text = f"Figure: {v.get('title', v.get('short_caption', 'Visual'))}" if v else f"Figure {asset_id_short}"
 
-                        if not (img_path and os.path.exists(img_path)):
+                        if v is not None and not (img_path and os.path.exists(img_path)):
                             import glob
                             possible = glob.glob(f".tmp/**/*{asset_id_short}*.*", recursive=True)
                             for p_path in possible:
@@ -387,7 +387,7 @@ def build_markdown_report(chapters: List[Dict], output_path: str = "Modernized_R
                         img_path = v.get('path') if v else None
                         cap_text = f"Figure: {v.get('title', v.get('short_caption', 'Visual'))}" if v else f"Figure {asset_id_short}"
 
-                        if not (img_path and os.path.exists(img_path)):
+                        if v is not None and not (img_path and os.path.exists(img_path)):
                             import glob
                             possible = glob.glob(f".tmp/**/*{asset_id_short}*.*", recursive=True)
                             for p_path in possible:
