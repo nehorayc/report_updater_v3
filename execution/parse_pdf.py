@@ -41,8 +41,11 @@ def extract_pdf_content(file_path: str, output_dir: str = ".tmp/assets") -> Dict
     avg_size = sum(all_sizes) / len(all_sizes) if all_sizes else 10
     logger.info(f"Average font size estimated: {avg_size:.2f}")
     
+    import re
+    
     for i, page in enumerate(doc):
         page_num = i + 1
+        page_height = page.rect.height
         blocks_dict = page.get_text("dict")["blocks"]
         
         for b in blocks_dict:
@@ -61,8 +64,25 @@ def extract_pdf_content(file_path: str, output_dir: str = ".tmp/assets") -> Dict
             block_text = block_text.strip()
             if not block_text: continue
             
+            # ----- Header / Footer / Page Number Filtering -----
+            y0 = b["bbox"][1] # top coordinate 
+            y1 = b["bbox"][3] # bottom coordinate
+            
+            # 1. Coordinate check: Is it in the top 8% or bottom 8% of the page?
+            is_margin = (y0 < page_height * 0.08) or (y1 > page_height * 0.92)
+            
+            # 2. Size check: Headers/Footers are almost always average size or smaller.
+            is_small = max_size_in_block <= (avg_size * 1.05)
+            
+            # 3. Pattern check: Catch common page numbers (e.g. "12", "Page 12", "- 12 -", "12 of 20")
+            is_page_num = re.match(r'^\s*(Page\s+)?-?\s*\d+\s*-?\s*(of\s+\d+)?\s*$', block_text, re.IGNORECASE)
+            
+            if (is_margin and is_small) or is_page_num:
+                logger.debug(f"Skipping header/footer/page num block: '{block_text[:50]}'")
+                continue
+            # ---------------------------------------------------
+
             # Heuristics for heading
-            import re
             is_numbered = re.match(r'^\d+(\.\d+)*\s+', block_text)
             
             # Check for bold spans

@@ -771,8 +771,11 @@ def render_final_assembly():
             
             status.update(label="Assembling DOCX...")
             report_name = st.session_state.get('original_report_name') or 'Modernized_Report'
-            output_filename = f"{report_name}.docx"
-            output_md_filename = f"{report_name}.md"
+            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            export_dir_base = "exports"
+            os.makedirs(export_dir_base, exist_ok=True)
+            output_filename = os.path.join(export_dir_base, f"{report_name}_{timestamp_str}.docx")
+            output_md_filename = os.path.join(export_dir_base, f"{report_name}_{timestamp_str}.md")
             path = build_final_report(
                 st.session_state.chapters, 
                 output_filename,
@@ -832,7 +835,10 @@ def render_final_assembly():
                     translated_chapters.append(new_ch)
                 
                 status.update(label=f"Building {lang} DOCX...")
-                filename = f"Modernized_Report_{lang}.docx"
+                export_dir_base = "exports"
+                os.makedirs(export_dir_base, exist_ok=True)
+                timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = os.path.join(export_dir_base, f"Modernized_Report_{lang}_{timestamp_str}.docx")
                 report_name = st.session_state.get('original_report_name') or 'Modernized_Report'
                 path = build_final_report(translated_chapters, filename, title=report_name)
                 st.session_state.translated_reports[lang] = path
