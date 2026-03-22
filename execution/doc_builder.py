@@ -140,7 +140,7 @@ class ReportBuilder:
 
         # Strip placeholder markers (e.g. [Figure XXXXXXXX: Caption]) that the LLM
         # emits by copying the example literally — these can never be matched to a visual.
-        placeholder_regex = r'\[(?:Figure|Asset:?)\s*X{4,}[:\s]*.*?\]'
+        placeholder_regex = r'\[(?:Figure|Asset|איור|תמונה|Figura|Image):?\s*X{4,}[:\s]*.*?\]'
         text = re.sub(placeholder_regex, '', text, flags=re.IGNORECASE)
 
         # Split text into lines to handle headers and lists properly
@@ -152,11 +152,11 @@ class ReportBuilder:
                 continue
                 
             # Handle Markers first (Special case) — support 8 to 32 alphanumeric char IDs
-            marker_pattern = r'\[(?:Figure|Asset:?)\s*([a-zA-Z0-9]{8,32})[:\s]*.*?\]'
+            marker_pattern = r'\[(?:Figure|Asset|איור|תמונה|Figura|Image):?\s*([a-zA-Z0-9]{8,32})[:\s]*.*?\]'
             if re.search(marker_pattern, line, re.IGNORECASE):
                 # If we have a marker in the line, we process it specifically
                 # We use a non-capturing group for the inner elements and capture the WHOLE tag to split cleanly
-                split_pattern = r'(\[(?:Figure|Asset:?)\s*[a-zA-Z0-9]{8,32}[:\s]*.*?\])'
+                split_pattern = r'(\[(?:Figure|Asset|איור|תמונה|Figura|Image):?\s*[a-zA-Z0-9]{8,32}[:\s]*.*?\])'
                 parts = re.split(split_pattern, line, flags=re.IGNORECASE)
                 p = self.doc.add_paragraph()
                 for part in parts:
@@ -363,7 +363,7 @@ def build_markdown_report(chapters: List[Dict], output_path: str = "Modernized_R
                     visual_map[orig_id[:8].lower()] = v
         
         text = ch['draft_text']
-        placeholder_regex = r'\[(?:Figure|Asset:?)\s*X{4,}[:\s]*.*?\]'
+        placeholder_regex = r'\[(?:Figure|Asset|איור|תמונה|Figura|Image):?\s*X{4,}[:\s]*.*?\]'
         text = re.sub(placeholder_regex, '', text, flags=re.IGNORECASE)
         
         lines = text.split('\n')
@@ -373,9 +373,9 @@ def build_markdown_report(chapters: List[Dict], output_path: str = "Modernized_R
                 md_content.append("")
                 continue
                 
-            marker_pattern = r'\[(?:Figure|Asset:?)\s*([a-zA-Z0-9]{8,32})[:\s]*.*?\]'
+            marker_pattern = r'\[(?:Figure|Asset|איור|תמונה|Figura|Image):?\s*([a-zA-Z0-9]{8,32})[:\s]*.*?\]'
             if re.search(marker_pattern, line, re.IGNORECASE):
-                split_pattern = r'(\[(?:Figure|Asset:?)\s*[a-zA-Z0-9]{8,32}[:\s]*.*?\])'
+                split_pattern = r'(\[(?:Figure|Asset|איור|תמונה|Figura|Image):?\s*[a-zA-Z0-9]{8,32}[:\s]*.*?\])'
                 parts = re.split(split_pattern, line, flags=re.IGNORECASE)
                 out_line = ""
                 for part in parts:

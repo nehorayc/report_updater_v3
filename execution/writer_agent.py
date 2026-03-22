@@ -11,7 +11,7 @@ import time
 
 logger = setup_logger("WriterAgent")
 
-def write_chapter(original_text: str, research_findings: List[Dict], blueprint: Dict, writing_style: str = "Professional", assets_to_update: List[Dict] = [], target_word_count: int = 500) -> Dict:
+def write_chapter(original_text: str, research_findings: List[Dict], blueprint: Dict, writing_style: str = "Professional", assets_to_update: List[Dict] = [], target_word_count: int = 500, temperature: float = 0.5) -> Dict:
     """
     Uses Gemini to rewrite a chapter based on research and original text.
     Returns a dictionary with text content and visual suggestions.
@@ -39,7 +39,7 @@ def write_chapter(original_text: str, research_findings: List[Dict], blueprint: 
             elif a.get('type') == 'table' and a.get('do_update'):
                  update_instructions += f"- UPDATE TABLE: Recreate Figure '{a.get('short_caption')}' (ID: {a['id']}) as a Markdown table using NEW data from research. Original structure: {a.get('description')}\n"
             else:
-                update_instructions += f"- RECREATE GRAPH: Recreate Figure '{a.get('short_caption')}' (Original ID: {a['id']}) using NEW data from research (extending to Present). Description: {a.get('description')}\n"
+                update_instructions += f"- RECREATE GRAPH: Recreate Figure '{a.get('short_caption')}' (Original ID: {a['id']}) using NEW data from research (extending to Present). Description: {a.get('description')}. YOU MUST add a matching entry in 'visual_suggestions' with id '{a['id']}' and the new data points so the system can redraw it.\n"
         update_instructions += "For each of these items, you MUST include a [Figure ID] marker in the appropriate place in 'text_content' (using the ID provided) so it appears in the final report.\n"
 
     prompt = f"""
@@ -90,7 +90,8 @@ def write_chapter(original_text: str, research_findings: List[Dict], blueprint: 
     - Do NOT use placeholder text like "XXXXXXXX".
     - For BRAND-NEW visual suggestions, you MUST invent a random 8-character hex ID (e.g. a1b2c3d4) for each one.
     - You MUST insert a marker for your new visual directly in the text where it belongs using the format [Figure <invented_id>: Caption].
-    - You MUST include this same exact <invented_id> in the 'id' field of the JSON object in the 'visual_suggestions' list.
+    - For EVERY visual in the 'visual_suggestions' list (whether newly invented or recreated/updated), you MUST explicitly include its 'id' field.
+    - For EVERY recreated/updated visual in the 'visual_suggestions' list, you MUST include an "action": "update" field.
 
     6. MANDATORY: Suggest at least 2 NEW visuals. Each must be EITHER a 'graph' (data chart) OR an 'image' (stock photo/diagram).
        Use 'graph' when you have or can estimate specific numerical data.
@@ -123,6 +124,7 @@ def write_chapter(original_text: str, research_findings: List[Dict], blueprint: 
           }}
         }},
         {{
+          "id": "e5f6g7h8",
           "type": "image",
           "title": "Short descriptive title",
           "description": "What this image should show",
@@ -141,7 +143,10 @@ def write_chapter(original_text: str, research_findings: List[Dict], blueprint: 
     """
 
     # Use JSON mode for guaranteed valid JSON output
-    generation_config = {"response_mime_type": "application/json"}
+    generation_config = {
+        "response_mime_type": "application/json",
+        "temperature": temperature
+    }
 
     logger.debug(f"Prompt sent to Gemini (truncated): {prompt[:500]}...")
     start_time = time.time()

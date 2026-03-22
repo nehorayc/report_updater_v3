@@ -390,8 +390,8 @@ def render_research_planning():
             
             blueprint['instructions'] = st.text_area("Specific Writing Instructions", value=blueprint['instructions'], key=f"inst_{c_id}")
             
-            # New: Chapter Number, Style & Length
-            col1, col2, col3 = st.columns(3)
+            # New: Chapter Number, Style, Length & Creativity
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 # Default number is index+1 if not set
                 current_num = chapter.get('number', idx + 1)
@@ -416,6 +416,16 @@ def render_research_planning():
                     key=f"len_{c_id}"
                 )
                 st.caption(f"Original: {orig_wc} words")
+            with col4:
+                chapter['temperature'] = st.slider(
+                    "Creativity (Similarity)",
+                    min_value=0.0,
+                    max_value=1.0,
+                    step=0.1,
+                    value=chapter.get('temperature', 0.5),
+                    help="0.0 = Keeps phrasing very similar to original, 1.0 = Highly creative rewrite",
+                    key=f"temp_{c_id}"
+                )
 
             # New: Graph Update Controls
             if 'asset_ids' in chapter:
@@ -562,7 +572,8 @@ def render_draft_generation():
                 chapter['blueprint'],
                 writing_style=writing_style,
                 assets_to_update=assets_to_update,
-                target_word_count=chapter.get('target_word_count', 500)
+                target_word_count=chapter.get('target_word_count', 500),
+                temperature=chapter.get('temperature', 0.5)
             )
             
             if "error" in result:
@@ -595,7 +606,7 @@ def render_draft_generation():
                     short_id = v['id'][:8]
 
                     # 2. Check if a marker for this ID already exists (from new prompt instructions)
-                    marker_exists = bool(re.search(r'\[(?:Figure|Asset:?)\s*' + re.escape(short_id) + r'[:\s\]]', draft_text, re.IGNORECASE))
+                    marker_exists = bool(re.search(r'\[(?:Figure|Asset|איור|תמונה|Figura|Image):?\s*' + re.escape(short_id) + r'[:\s\]]', draft_text, re.IGNORECASE))
 
                     if not marker_exists:
                         # 3. Handle older logic or replacements
