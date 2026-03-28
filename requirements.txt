@@ -12,4 +12,6 @@ plotly
 duckduckgo-search
 google-generativeai
 Pillow
+pytest
+pytest-cov
 # Add other dependencies as needed

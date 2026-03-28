@@ -63,6 +63,25 @@ def _make_safe_globals() -> dict:
     return {"__builtins__": safe_builtins}
 
 
+def _coerce_numeric_series(values, target_len: int) -> list[float]:
+    """Normalize chart series length and convert missing/bad values to 0."""
+    if isinstance(values, list):
+        series = values[:target_len]
+    else:
+        series = [values]
+
+    if len(series) < target_len:
+        series = series + [0] * (target_len - len(series))
+
+    normalized = []
+    for value in series[:target_len]:
+        try:
+            normalized.append(float(value) if value is not None else 0.0)
+        except (ValueError, TypeError):
+            normalized.append(0.0)
+    return normalized
+
+
 def generate_graph_with_llm(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
     """
     Uses Gemini to write a Matplotlib Python script for the given visual,
@@ -204,6 +223,7 @@ def generate_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
     start_time = time.time()
     try:
         fig, ax = plt.subplots(figsize=(12, 7))
+        x_positions = list(range(len(labels)))
 
         # --- Bug 6 fix: route by chart_type ---
 
@@ -228,14 +248,7 @@ def generate_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
 
                 if len(measurement) != len(labels):
                     logger.warning(f"Data mismatch for {attribute}: truncating/padding.")
-                    if not isinstance(measurement, list):
-                        measurement = [measurement]
-                    measurement = measurement[:len(labels)] + [0] * (len(labels) - len(measurement))
-
-                try:
-                    measurement = [float(v) if v is not None else 0 for v in measurement]
-                except (ValueError, TypeError):
-                    measurement = [0] * len(labels)
+                measurement = _coerce_numeric_series(measurement, len(labels))
 
                 if chart_type == "line":
                     ax.plot(x, measurement, marker='o', label=attribute, color=color, linewidth=2)
@@ -249,27 +262,24 @@ def generate_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
 
         elif chart_type == "pie":
             # Pie chart: ignore labels/values mismatch gracefully
-            try:
-                float_vals = [float(v) if v is not None else 0 for v in values]
-            except (ValueError, TypeError):
-                float_vals = [1] * len(labels)
+            float_vals = _coerce_numeric_series(values, len(labels))
             colors = _CORP_COLORS[:len(labels)]
             ax.pie(float_vals, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
             ax.axis('equal')
 
         elif chart_type == "line":
-            try:
-                float_vals = [float(v) if v is not None else 0 for v in values]
-            except (ValueError, TypeError):
-                float_vals = [0] * len(labels)
-            ax.plot(labels, float_vals, marker='o', color=_CORP_COLORS[0], linewidth=2.5, markersize=6)
+            float_vals = _coerce_numeric_series(values, len(labels))
+            ax.plot(x_positions, float_vals, marker='o', color=_CORP_COLORS[0], linewidth=2.5, markersize=6)
+            ax.set_xticks(x_positions)
             ax.set_xticklabels(labels, rotation=45 if len(labels) > 4 else 0, ha='right')
-            ax.fill_between(labels, float_vals, alpha=0.1, color=_CORP_COLORS[0])
+            ax.fill_between(x_positions, float_vals, alpha=0.1, color=_CORP_COLORS[0])
 
         else:
             # Default: bar chart (single series)
+            float_vals = _coerce_numeric_series(values, len(labels))
             colors = _CORP_COLORS[:len(labels)]
-            ax.bar(labels, values, color=colors)
+            ax.bar(x_positions, float_vals, color=colors)
+            ax.set_xticks(x_positions)
             ax.set_xticklabels(labels, rotation=45 if len(labels) > 4 else 0, ha='right')
 
         ax.set_title(title, fontsize=14, fontweight='bold', pad=15)

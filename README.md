@@ -30,6 +30,19 @@ A Streamlit-based application to modernize legacy reports using Deep Research an
    GEMINI_API_KEY=your_gemini_api_key_here
    ```
 
+## Dev Container
+The repo now includes a VS Code dev container in `.devcontainer/`.
+
+1. Install Docker Desktop and the VS Code Dev Containers extension.
+2. Open the repo in VS Code and run `Dev Containers: Reopen in Container`.
+3. The container will install `requirements.txt` automatically on first create.
+4. Start the app from the container terminal:
+   ```bash
+   python -m streamlit run app.py
+   ```
+
+Port `8501` is forwarded automatically, and Streamlit is configured to bind to `0.0.0.0` inside the container. Your existing `.env` file stays in the workspace and is available to the app as usual.
+
 ## Running the App
 You can run the app using the batch file:
 ```bash

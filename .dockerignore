@@ -1,0 +1,14 @@
+.git
+.env
+.venv
+.pytest_cache
+.tmp
+__pycache__
+logs
+exports
+temp reports
+token.json
+credentials.json
+*.pyc
+*.docx
+*.pdf

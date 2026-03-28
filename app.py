@@ -45,6 +45,7 @@ from parse_docx import extract_docx_content
 from vision_service import analyze_batch_assets
 from translator import translate_content
 from chapter_analyzer import analyze_chapter_content
+from report_metadata_analyzer import infer_report_metadata
 
 # State Machine Constants
 STATE_UPLOAD_EXTRACT = "UPLOAD_AND_EXTRACT"
@@ -71,6 +72,30 @@ if "selected_asset_ids" not in st.session_state:
 
 if "original_report_name" not in st.session_state:
     st.session_state.original_report_name = None
+
+if "report_metadata" not in st.session_state:
+    today = datetime.now().date()
+    st.session_state.report_metadata = {
+        "original_report_date": today,
+        "update_start_date": today,
+        "update_end_date": today,
+        "output_language": "Match Source Language",
+        "target_audience": "General professional audience",
+        "edition_title": "",
+        "preserve_original_voice": True,
+    }
+
+if "report_date_inference" not in st.session_state:
+    st.session_state.report_date_inference = {}
+
+if "global_reference_map" not in st.session_state:
+    st.session_state.global_reference_map = {}
+
+if "quality_gate_result" not in st.session_state:
+    st.session_state.quality_gate_result = None
+
+if "last_cleanup_result" not in st.session_state:
+    st.session_state.last_cleanup_result = None
 
 if "debug_mode" not in st.session_state:
     st.session_state.debug_mode = True
@@ -113,6 +138,138 @@ def ask_for_api_key():
         else:
             st.error("Please enter a valid API Key.")
 
+
+def _coerce_date(value, fallback=None):
+    fallback = fallback or datetime.now().date()
+    if value is None:
+        return fallback
+    if isinstance(value, datetime):
+        return value.date()
+    if hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day") and not isinstance(value, str):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value).date()
+        except ValueError:
+            match = re.search(r'(\d{4}-\d{2}-\d{2})', value)
+            if match:
+                return datetime.fromisoformat(match.group(1)).date()
+    return fallback
+
+
+def _get_report_metadata():
+    stored = st.session_state.get("report_metadata", {})
+    today = datetime.now().date()
+    return {
+        "original_report_date": _coerce_date(stored.get("original_report_date"), today),
+        "update_start_date": _coerce_date(stored.get("update_start_date"), today),
+        "update_end_date": _coerce_date(stored.get("update_end_date"), today),
+        "output_language": stored.get("output_language", "Match Source Language"),
+        "target_audience": stored.get("target_audience", "General professional audience"),
+        "edition_title": stored.get("edition_title", ""),
+        "preserve_original_voice": bool(stored.get("preserve_original_voice", True)),
+    }
+
+
+def _serialize_report_metadata(metadata):
+    return {
+        "original_report_date": metadata["original_report_date"].isoformat(),
+        "update_start_date": metadata["update_start_date"].isoformat(),
+        "update_end_date": metadata["update_end_date"].isoformat(),
+        "output_language": metadata.get("output_language", "Match Source Language"),
+        "target_audience": metadata.get("target_audience", "General professional audience"),
+        "edition_title": metadata.get("edition_title", ""),
+        "preserve_original_voice": bool(metadata.get("preserve_original_voice", True)),
+    }
+
+
+def _format_update_window(metadata):
+    return f"{metadata['update_start_date'].isoformat()} to {metadata['update_end_date'].isoformat()}"
+
+
+def _validate_report_metadata(metadata):
+    errors = []
+    if metadata["update_start_date"] < metadata["original_report_date"]:
+        errors.append("Update start date must be on or after the original report date.")
+    if metadata["update_end_date"] < metadata["update_start_date"]:
+        errors.append("Update end date must be on or after the update start date.")
+    return errors
+
+
+def _approved_visual_short_ids(chapter):
+    ids = set()
+    for visual in chapter.get("approved_visuals", []):
+        for key in ("id", "original_asset_id"):
+            value = visual.get(key)
+            if value:
+                ids.add(str(value)[:8].lower())
+    return ids
+
+
+def _visual_short_id(visual):
+    for key in ("id", "original_asset_id"):
+        value = visual.get(key)
+        if value:
+            return str(value)[:8].lower()
+    return ""
+
+
+def _strip_unapproved_visual_markers(text: str, approved_visual_ids):
+    marker_pattern = re.compile(
+        r"\[(?:Figure|Asset|Image|Figura|איור|תמונה):?\s*([a-zA-Z0-9]{8,32})[:\s]*.*?\]",
+        re.IGNORECASE,
+    )
+
+    def replace_marker(match):
+        marker_id = match.group(1)[:8].lower()
+        return match.group(0) if marker_id in approved_visual_ids else ""
+
+    cleaned = marker_pattern.sub(replace_marker, text or "")
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+def _strip_export_visual_tokens(text: str, approved_visual_ids):
+    cleaned = _strip_unapproved_visual_markers(text, approved_visual_ids)
+    cleaned = re.sub(r"\[\s*visual\s*:\s*([a-zA-Z0-9]{8,32})[^\]]*\]", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def render_report_metadata_editor(key_prefix: str):
+    metadata = _get_report_metadata()
+    inference = st.session_state.get("report_date_inference") or {}
+
+    st.markdown("##### Edition Update Settings")
+    if inference.get("original_report_date"):
+        source_excerpt = inference.get("source_excerpt", "")
+        st.caption(
+            f"Auto-detected from report text: {inference['original_report_date']} "
+            f"({inference.get('confidence', 'unknown')} confidence). {source_excerpt}"
+        )
+    else:
+        st.caption("If left unchanged, the original report date and update start date will be inferred from the report text during extraction when possible.")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        metadata["original_report_date"] = st.date_input("Original Report Date", value=metadata["original_report_date"], key=f"{key_prefix}_original_report_date")
+    with col2:
+        metadata["update_start_date"] = st.date_input("Update Start Date", value=metadata["update_start_date"], key=f"{key_prefix}_update_start_date")
+    with col3:
+        metadata["update_end_date"] = st.date_input("Update Through Date", value=metadata["update_end_date"], key=f"{key_prefix}_update_end_date")
+
+    metadata["output_language"] = st.selectbox(
+        "Output Language",
+        ["Match Source Language", "English", "Hebrew"],
+        index=["Match Source Language", "English", "Hebrew"].index(metadata.get("output_language", "Match Source Language")),
+        key=f"{key_prefix}_output_language",
+    )
+    metadata["target_audience"] = st.text_input("Target Audience", value=metadata.get("target_audience", "General professional audience"), key=f"{key_prefix}_target_audience", placeholder="e.g. policymakers, executives, technical leaders")
+    metadata["edition_title"] = st.text_input("Edition Title", value=metadata.get("edition_title", ""), key=f"{key_prefix}_edition_title", placeholder="Optional custom title for the updated edition")
+    metadata["preserve_original_voice"] = st.checkbox("Preserve original voice and structure where possible", value=bool(metadata.get("preserve_original_voice", True)), key=f"{key_prefix}_preserve_original_voice")
+
+    st.session_state.report_metadata = metadata
+    return metadata
+
 # --- Main Logic ---
 def main():
     st.title("Report Updater v3 (Horizon/Elisha)")
@@ -142,67 +299,92 @@ def main():
 
 # --- Render Functions (Placeholders) ---
 
+
 def render_upload_extract():
     st.header("1. Upload & Blind Extraction")
     st.write("Upload a source PDF or DOCX to begin.")
-    
+
     uploaded_file = st.file_uploader("Source Document", type=["pdf", "docx"])
-    
+
     if uploaded_file:
-        # Save uploaded file to .tmp
+        report_metadata = render_report_metadata_editor("upload")
+        metadata_errors = _validate_report_metadata(report_metadata)
+        for error in metadata_errors:
+            st.error(error)
+
         if not os.path.exists(".tmp"):
             os.makedirs(".tmp")
         temp_path = os.path.join(".tmp", uploaded_file.name)
         with open(temp_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
-        
+
         if st.button("Process Document"):
+            if metadata_errors:
+                logger.warning("Blocked document processing due to invalid report metadata.")
+                return
+
             logger.info(f"User clicked 'Process Document' for file: {uploaded_file.name}")
             with st.spinner("Extracting text and media..."):
                 if uploaded_file.name.endswith(".pdf"):
                     results = extract_pdf_content(temp_path)
                 else:
                     results = extract_docx_content(temp_path)
-                
-                # Store original report name (without extension) for output
+
                 original_name = os.path.splitext(uploaded_file.name)[0]
                 st.session_state.original_report_name = original_name
-                
-                # Patterns for Table of Contents chapters to exclude
+                inferred_report_metadata = infer_report_metadata(original_name, results.get("chapters", []))
+                st.session_state.report_date_inference = inferred_report_metadata
+
+                inferred_original_date = None
+                raw_inferred_date = inferred_report_metadata.get("original_report_date")
+                if raw_inferred_date:
+                    try:
+                        inferred_original_date = datetime.fromisoformat(raw_inferred_date).date()
+                    except ValueError:
+                        logger.warning("Unable to parse inferred report date '%s'.", raw_inferred_date)
+
+                today = datetime.now().date()
+                if inferred_original_date:
+                    if report_metadata.get("original_report_date") == today:
+                        report_metadata["original_report_date"] = inferred_original_date
+                    if report_metadata.get("update_start_date") == today:
+                        report_metadata["update_start_date"] = inferred_original_date
+
+                if not report_metadata.get("edition_title"):
+                    report_metadata["edition_title"] = f"{original_name} Updated Edition"
+                st.session_state.report_metadata = report_metadata
+
                 toc_patterns = [
                     "table of contents", "contents", "תוכן עניינים",
                     "תוכן", "toc", "índice", "inhaltsverzeichnis"
                 ]
-                
+
                 st.session_state.chapters = []
                 total_ch = len(results["chapters"])
                 status = st.empty()
                 progress = st.progress(0)
-                
+
                 for i, ch in enumerate(results["chapters"]):
-                    # Skip Table of Contents chapters
                     if ch['title'].strip().lower() in toc_patterns:
                         logger.info(f"Skipping ToC chapter: '{ch['title']}'")
                         continue
-                    
+
                     ch['id'] = str(uuid.uuid4())
-                    
-                    # Analyze Content
                     status.text(f"Analyzing Chapter {i+1}/{total_ch}: {ch['title'][:30]}...")
                     analysis = analyze_chapter_content(ch['title'], ch['content'])
-                    
-                    # Store original content for reference but use summary for display/research
+
                     ch['original_full_text'] = ch['content']
                     ch['original_word_count'] = len(ch['content'].split())
+                    ch['baseline'] = analysis
                     ch['content'] = analysis.get('summary', ch['content'][:500] + "...")
                     ch['extracted_keywords'] = analysis.get('keywords', [])
-                    
+
                     st.session_state.chapters.append(ch)
                     progress.progress((i + 1) / total_ch)
-                
+
                 status.empty()
                 progress.empty()
-                
+
                 st.session_state.assets = results["assets"]
                 logger.info(f"Extraction & Analysis complete. Chapters: {len(st.session_state.chapters)}, Assets: {len(st.session_state.assets)}")
                 st.session_state.current_state = STATE_ASSET_SELECTION
@@ -352,88 +534,96 @@ def render_asset_selection():
         logger.info("Transitioning to STATE_RESEARCH_PLANNING.")
         st.rerun()
 
+
 def render_research_planning():
     st.header("3. Research Planning")
     st.write("Define the research blueprint and refine contents for each chapter.")
-    
-    # Track indices to remove
+
+    report_metadata = render_report_metadata_editor("planning")
+    metadata_errors = _validate_report_metadata(report_metadata)
+    for error in metadata_errors:
+        st.error(error)
+    st.caption(
+        f"Updating from {report_metadata['update_start_date'].isoformat()} to {report_metadata['update_end_date'].isoformat()} "
+        f"based on an original report dated {report_metadata['original_report_date'].isoformat()}."
+    )
+
     to_remove = None
 
     for idx, chapter in enumerate(st.session_state.chapters):
-        c_id = chapter.get('id', str(idx)) # Fallback just in case
-        with st.expander(f"Chapter {idx+1}: {chapter['title']}", expanded=(idx==0)):
-            # 1. Edit Chapter Title & Summary
+        c_id = chapter.get('id', str(idx))
+        with st.expander(f"Chapter {idx+1}: {chapter['title']}", expanded=(idx == 0)):
+            baseline = chapter.get('baseline', {})
+            if baseline:
+                with st.container(border=True):
+                    st.markdown("##### Original Edition Baseline")
+                    if baseline.get('summary'):
+                        st.write(baseline['summary'])
+                    if baseline.get('core_claims'):
+                        st.caption("Core claims from the original chapter")
+                        for claim in baseline['core_claims']:
+                            st.markdown(f"- {claim}")
+                    if baseline.get('dated_facts'):
+                        st.caption("Dated facts that may need updating")
+                        for fact in baseline['dated_facts']:
+                            st.markdown(f"- {fact}")
+                    if baseline.get('stats'):
+                        st.caption("Notable original numbers or metrics")
+                        st.write(", ".join(baseline['stats'][:6]))
+
             chapter['title'] = st.text_input("Chapter Title", value=chapter.get('title', ''), key=f"title_{c_id}")
             chapter['content'] = st.text_area("Chapter Summary (AI Generated)", value=chapter.get('content', ''), height=200, key=f"content_{c_id}")
-            
+
             st.divider()
-            
-            # 2. Research Blueprint
+
             if 'blueprint' not in chapter:
-                # Use extracted keywords if available, otherwise just topic
                 default_keywords = chapter.get('extracted_keywords', chapter['title'].split())
                 chapter['blueprint'] = {
                     "topic": chapter['title'],
-                    "timeframe": "Last 2 years",
+                    "timeframe": _format_update_window(report_metadata),
                     "keywords": default_keywords,
-                    "instructions": ""
+                    "instructions": "",
                 }
-            
+
             blueprint = chapter['blueprint']
-            blueprint['topic'] = st.text_input("Deep Research Topic", value=blueprint['topic'], key=f"topic_{c_id}")
-            blueprint['timeframe'] = st.text_input("Timeframe", value=blueprint['timeframe'], key=f"time_{c_id}")
-            
-            # Keywords as a string, then split
-            kw_val = ", ".join(blueprint['keywords'])
+            blueprint['topic'] = st.text_input("Deep Research Topic", value=blueprint.get('topic', chapter['title']), key=f"topic_{c_id}")
+            blueprint['timeframe'] = st.text_input("Timeframe", value=blueprint.get('timeframe', _format_update_window(report_metadata)), key=f"time_{c_id}")
+
+            kw_val = ", ".join(blueprint.get('keywords', []))
             kw_str = st.text_input("Search Keywords (comma separated)", value=kw_val, key=f"kw_{c_id}")
             blueprint['keywords'] = [k.strip() for k in kw_str.split(",") if k.strip()]
-            
-            blueprint['instructions'] = st.text_area("Specific Writing Instructions", value=blueprint['instructions'], key=f"inst_{c_id}")
-            
-            # New: Chapter Number, Style, Length & Creativity
+
+            blueprint['instructions'] = st.text_area("Specific Writing Instructions", value=blueprint.get('instructions', ''), key=f"inst_{c_id}")
+            blueprint['report_metadata'] = _serialize_report_metadata(report_metadata)
+            blueprint['original_report_date'] = blueprint['report_metadata']['original_report_date']
+            blueprint['update_start_date'] = blueprint['report_metadata']['update_start_date']
+            blueprint['update_end_date'] = blueprint['report_metadata']['update_end_date']
+            blueprint['output_language'] = report_metadata.get('output_language', 'Match Source Language')
+            blueprint['target_audience'] = report_metadata.get('target_audience', 'General professional audience')
+            blueprint['edition_title'] = report_metadata.get('edition_title') or st.session_state.original_report_name or ''
+            blueprint['preserve_original_voice'] = report_metadata.get('preserve_original_voice', True)
+            blueprint['baseline_summary'] = baseline.get('summary', chapter.get('content', ''))
+            blueprint['baseline_claims'] = baseline.get('core_claims', [])
+            blueprint['chapter_role'] = baseline.get('chapter_role', 'body')
+
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                # Default number is index+1 if not set
                 current_num = chapter.get('number', idx + 1)
                 chapter['number'] = st.number_input("Chapter Number", min_value=1, step=1, value=current_num, key=f"num_{c_id}")
             with col2:
                 chapter['writing_style'] = st.text_input("Writing Style", value=chapter.get('writing_style', 'Professional'), key=f"style_{c_id}", placeholder="e.g. Academic, Witty")
             with col3:
                 orig_wc = chapter.get('original_word_count', 500)
-                
-                # Initial value: rounded to nearest 100
                 if 'target_word_count' not in chapter:
                     chapter['target_word_count'] = max(100, round(orig_wc / 100) * 100)
-                
-                # Slider with step=100
-                chapter['target_word_count'] = st.slider(
-                    f"Target Length (Words)", 
-                    min_value=100, 
-                    max_value=max(2000, (orig_wc // 100 + 5) * 100), # Ensure max is a multiple of 100
-                    step=100,
-                    value=int(chapter['target_word_count']),
-                    help=f"Original length: {orig_wc} words",
-                    key=f"len_{c_id}"
-                )
+                chapter['target_word_count'] = st.slider("Target Length (Words)", min_value=100, max_value=max(2000, (orig_wc // 100 + 5) * 100), step=100, value=int(chapter['target_word_count']), help=f"Original length: {orig_wc} words", key=f"len_{c_id}")
                 st.caption(f"Original: {orig_wc} words")
             with col4:
-                chapter['temperature'] = st.slider(
-                    "Creativity (Similarity)",
-                    min_value=0.0,
-                    max_value=1.0,
-                    step=0.1,
-                    value=chapter.get('temperature', 0.5),
-                    help="0.0 = Keeps phrasing very similar to original, 1.0 = Highly creative rewrite",
-                    key=f"temp_{c_id}"
-                )
+                chapter['temperature'] = st.slider("Creativity (Similarity)", min_value=0.0, max_value=1.0, step=0.1, value=chapter.get('temperature', 0.5), help="0.0 = Keeps phrasing very similar to original, 1.0 = Highly creative rewrite", key=f"temp_{c_id}")
 
-            # New: Graph Update Controls
             if 'asset_ids' in chapter:
-                # Find charts in this chapter
-                # Need to look up in assets list
                 assets_in_chapter = [a for a in st.session_state.assets if a['id'] in chapter['asset_ids']]
                 charts = [a for a in assets_in_chapter if a.get('type') == 'chart']
-                
                 if charts:
                     st.markdown("##### 📊 Graph Updates")
                     for chart in charts:
@@ -446,10 +636,9 @@ def render_research_planning():
                                 do_update = st.checkbox("🔄 Recreate with updated data (2010-Present)", value=chart.get('do_update', False), key=f"update_{chart['id']}")
                                 chart['do_update'] = do_update
                                 if do_update:
-                                    def_query = chart.get('update_query') or f"{chart.get('short_caption')} statistics 2024"
+                                    def_query = chart.get('update_query') or f"{chart.get('short_caption')} statistics {report_metadata['update_end_date'].year}"
                                     chart['update_query'] = st.text_input("Search Query", value=def_query, key=f"query_{chart['id']}")
 
-                # Find tables in this chapter
                 tables = [a for a in assets_in_chapter if a.get('type') == 'table']
                 if tables:
                     st.markdown("##### 📋 Table Updates")
@@ -460,24 +649,19 @@ def render_research_planning():
                                 st.image(table['path'], width=100)
                             with t_col2:
                                 st.caption(f"**Fig {table['id'][:8]}**: {table.get('short_caption', '')}")
-                                
-                                # Option 1: Convert to Text
                                 conv_key = f"conv_{table['id']}"
                                 st.checkbox("📄 Convert to editable Markdown table", value=table.get('convert_to_text', False), key=conv_key)
                                 table['convert_to_text'] = st.session_state[conv_key]
-                                
-                                # Option 2: Update Data
                                 upd_key = f"upd_table_{table['id']}"
                                 st.checkbox("🔄 Recreate with updated data", value=table.get('do_update', False), key=upd_key)
                                 table['do_update'] = st.session_state[upd_key]
-                                
                                 if table['do_update']:
-                                    def_query = table.get('update_query') or f"{table.get('short_caption')} data 2024"
+                                    def_query = table.get('update_query') or f"{table.get('short_caption')} data {report_metadata['update_end_date'].year}"
                                     table['update_query'] = st.text_input("Search Query", value=def_query, key=f"query_tbl_{table['id']}")
 
-            # Sub-uploader for reference docs
             uploaded_refs = st.file_uploader(f"Reference Docs for Chapter {idx+1}", type=["pdf", "docx", "txt"], accept_multiple_files=True, key=f"ref_{c_id}")
             if uploaded_refs:
+                os.makedirs(".tmp", exist_ok=True)
                 ref_paths = []
                 for ref_file in uploaded_refs:
                     path = os.path.join(".tmp", f"ref_{c_id}_{ref_file.name}")
@@ -486,40 +670,64 @@ def render_research_planning():
                     ref_paths.append(path)
                 blueprint['ref_paths'] = ref_paths
 
-            # 3. Remove Chapter
-            if st.button(f"🗑️ Remove Chapter {idx+1}", key=f"remove_{c_id}"):
+            if st.button(f"Remove Chapter {idx+1}", key=f"remove_{c_id}"):
                 to_remove = idx
 
-    # Handle removal
     if to_remove is not None:
         st.session_state.chapters.pop(to_remove)
         st.rerun()
 
     st.divider()
-    
-    # 4. Add Chapter
-    if st.button("➕ Add New Chapter"):
+
+    if st.button("Add New Chapter"):
         st.session_state.chapters.append({
             "id": str(uuid.uuid4()),
             "title": "New Chapter",
             "content": "",
+            "baseline": {
+                "summary": "",
+                "keywords": [],
+                "core_claims": [],
+                "dated_facts": [],
+                "named_entities": [],
+                "stats": [],
+                "original_citations": [],
+                "original_figures": [],
+                "chapter_role": "body",
+                "language": "English",
+            },
             "original_word_count": 0,
             "target_word_count": 500,
             "blueprint": {
                 "topic": "New Topic",
-                "timeframe": "Last 2 years",
+                "timeframe": _format_update_window(report_metadata),
                 "keywords": [],
-                "instructions": ""
+                "instructions": "",
+                "report_metadata": _serialize_report_metadata(report_metadata),
+                "original_report_date": report_metadata['original_report_date'].isoformat(),
+                "update_start_date": report_metadata['update_start_date'].isoformat(),
+                "update_end_date": report_metadata['update_end_date'].isoformat(),
+                "output_language": report_metadata.get('output_language', 'Match Source Language'),
+                "target_audience": report_metadata.get('target_audience', 'General professional audience'),
+                "edition_title": report_metadata.get('edition_title') or st.session_state.original_report_name or '',
+                "preserve_original_voice": report_metadata.get('preserve_original_voice', True),
+                "baseline_summary": "",
+                "baseline_claims": [],
+                "chapter_role": "body",
             }
         })
         st.rerun()
 
-    if st.button("🚀 Start Research & Drafting"):
+    if st.button("Start Research & Drafting"):
+        if metadata_errors:
+            logger.warning("Blocked draft generation due to invalid report metadata.")
+            return
         st.session_state.current_state = STATE_DRAFT_GENERATION
         st.rerun()
 
 from research_agent import perform_comprehensive_research
 from writer_agent import write_chapter
+from quality_gate import clean_fixable_issues, evaluate_report_quality, has_blocking_issues
 
 def render_draft_generation():
     st.header("4. Draft Generation")
@@ -557,6 +765,10 @@ def render_draft_generation():
                                 graph_findings = perform_comprehensive_research({
                                     "topic": query,
                                     "keywords": [], # Query is specific enough
+                                    "report_metadata": chapter['blueprint'].get('report_metadata', {}),
+                                    "original_report_date": chapter['blueprint'].get('original_report_date'),
+                                    "update_start_date": chapter['blueprint'].get('update_start_date'),
+                                    "update_end_date": chapter['blueprint'].get('update_end_date'),
                                 })
                                 # Tag these findings so the writer knows they are for the graph
                                 for gf in graph_findings:
@@ -582,6 +794,10 @@ def render_draft_generation():
             else:
                 draft_text = result['text_content']
                 visual_suggestions = result.get('visual_suggestions', [])
+                generated_title = str(result.get('chapter_title', '')).strip()
+                if generated_title:
+                    chapter.setdefault('source_title', chapter.get('title', ''))
+                    chapter['title'] = generated_title
                 
                 # --- Post-process Visuals and Markers ---
                 # Ensure IDs match DocBuilder format (8-char hex) and markers exist
@@ -628,6 +844,11 @@ def render_draft_generation():
                             logger.info(f"Injected new visual marker for '{v.get('title')}' (id={short_id}) at chapter end.")
 
                 chapter['draft_text'] = draft_text
+                chapter['executive_takeaway'] = result.get('executive_takeaway', '')
+                chapter['retained_claims'] = result.get('retained_claims', [])
+                chapter['updated_claims'] = result.get('updated_claims', [])
+                chapter['new_claims'] = result.get('new_claims', [])
+                chapter['open_questions'] = result.get('open_questions', [])
                 chapter['suggested_visuals'] = visual_suggestions
                 chapter['references'] = result.get('references', [])
             
@@ -642,17 +863,134 @@ from graph_generator import generate_graph
 from image_search import search_and_download_image
 from doc_builder import build_final_report, build_markdown_report
 
+def render_quality_gate_results(result):
+    if not result:
+        return
+
+    summary = result.get("summary", {})
+    error_count = summary.get("error_count", 0)
+    warning_count = summary.get("warning_count", 0)
+    update_window = summary.get("update_window", "selected range")
+    auto_fixable_count = summary.get("auto_fixable_count", 0)
+    by_code = summary.get("by_code", {})
+
+    st.divider()
+    st.subheader("Pre-Export Quality Gate")
+    if summary.get("blocking"):
+        st.error(f"Blocking issues found: {error_count} errors and {warning_count} warnings for update window {update_window}.")
+    elif warning_count:
+        st.warning(f"No blocking issues found, but there are {warning_count} warnings for update window {update_window}.")
+    else:
+        st.success(f"Quality gate passed cleanly for update window {update_window}.")
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Errors", error_count)
+    metric_cols[1].metric("Warnings", warning_count)
+    metric_cols[2].metric("Auto-fixable", auto_fixable_count)
+    metric_cols[3].metric("Issue Types", len(by_code))
+
+    cleanup_summary = (st.session_state.get("last_cleanup_result") or {}).get("summary", {})
+    if cleanup_summary:
+        st.info(
+            "Last cleanup pass touched "
+            f"{cleanup_summary.get('changed_chapters', 0)} chapter(s) and applied "
+            f"{cleanup_summary.get('fixes_applied', 0)} fix(es)."
+        )
+
+    if by_code:
+        with st.expander("Issue Type Summary", expanded=summary.get("blocking", False)):
+            for code, count in sorted(by_code.items()):
+                st.write(f"- {code}: {count}")
+
+    for chapter_result in result.get("chapters", []):
+        issues = chapter_result.get("issues", [])
+        if not issues:
+            continue
+        with st.expander(f"Quality Gate - {chapter_result['chapter_title']}"):
+            for issue in issues:
+                status_prefix = "Auto-fixable" if issue.get("auto_fixable") else "Manual fix"
+                label = f"{issue.get('code', 'issue')}: {issue.get('message', '')}"
+                if issue.get("severity") == "error":
+                    st.error(label)
+                else:
+                    st.warning(label)
+                st.caption(status_prefix)
+                if issue.get("paragraph_number") is not None:
+                    st.caption(f"Paragraph: {issue['paragraph_number']}")
+                if issue.get("hint"):
+                    st.caption(f"Suggested fix: {issue['hint']}")
+                if issue.get("context"):
+                    st.code(issue["context"], language="text")
+
+
+def run_quality_gate():
+    quality_report = evaluate_report_quality(
+        st.session_state.chapters,
+        _serialize_report_metadata(_get_report_metadata()),
+    )
+    st.session_state.quality_gate_result = quality_report
+    return quality_report
+
 def render_draft_verification():
     st.header("5. Verification & Refinement")
     st.write("Review and edit the new report content. Approve suggested visuals.")
+
+    def reset_generated_chapter(chapter):
+        for key in (
+            "draft_text",
+            "executive_takeaway",
+            "retained_claims",
+            "updated_claims",
+            "new_claims",
+            "open_questions",
+            "suggested_visuals",
+            "references",
+            "approved_visuals",
+        ):
+            chapter.pop(key, None)
     
     for idx, chapter in enumerate(st.session_state.chapters):
         with st.expander(f"Verify Chapter: {chapter['title']}"):
             col1, col2 = st.columns([2, 1])
             
             with col1:
+                if any([
+                    chapter.get('executive_takeaway'),
+                    chapter.get('retained_claims'),
+                    chapter.get('updated_claims'),
+                    chapter.get('new_claims'),
+                    chapter.get('open_questions'),
+                ]):
+                    with st.container(border=True):
+                        st.subheader("Edition Update Summary")
+                        if chapter.get('executive_takeaway'):
+                            st.caption("Executive Takeaway")
+                            st.write(chapter['executive_takeaway'])
+                        if chapter.get('retained_claims'):
+                            st.caption("Retained Claims")
+                            for item in chapter['retained_claims']:
+                                st.markdown(f"- {item}")
+                        if chapter.get('updated_claims'):
+                            st.caption("Updated Claims")
+                            for item in chapter['updated_claims']:
+                                st.markdown(f"- {item}")
+                        if chapter.get('new_claims'):
+                            st.caption("New Claims")
+                            for item in chapter['new_claims']:
+                                st.markdown(f"- {item}")
+                        if chapter.get('open_questions'):
+                            st.caption("Open Questions")
+                            for item in chapter['open_questions']:
+                                st.markdown(f"- {item}")
+
                 st.subheader("Draft Text")
                 chapter['draft_text'] = st.text_area("Edit Content", value=chapter['draft_text'], height=400, key=f"edit_{idx}")
+                if st.button("Regenerate This Chapter", key=f"regen_{idx}"):
+                    reset_generated_chapter(chapter)
+                    st.session_state.quality_gate_result = None
+                    st.session_state.last_cleanup_result = None
+                    st.session_state.current_state = STATE_DRAFT_GENERATION
+                    st.rerun()
             
             with col2:
                 st.subheader("Visual Suggestions")
@@ -662,34 +1000,34 @@ def render_draft_verification():
                     new_visuals = [v for v in chapter['suggested_visuals'] if v not in updates]
                     
                     if updates:
-                        st.markdown("#### 🔄 Updates to Original Assets")
+                        st.markdown("#### Updates to Original Assets")
                         for v_idx, visual in enumerate(updates):
                             with st.container(border=True):
                                 # Source type badge
                                 v_type = visual.get('type', 'visual').lower()
                                 if v_type == 'graph':
-                                    st.caption("📊 **LLM-Generated Graph** (from your data)")
+                                    st.caption("Graph generated from your data")
                                 elif v_type == 'image':
-                                    st.caption("🔍 **Web Image** (DuckDuckGo search)")
+                                    st.caption("Web image from DuckDuckGo search")
                                 else:
-                                    st.caption(f"🔄 **{v_type.capitalize()}**")
+                                    st.caption(v_type.capitalize())
                                 
                                 st.write(f"**{visual.get('type', 'Visual').upper()}**: {visual.get('title', visual.get('description'))}")
                                 st.checkbox("Approve Update", value=True, key=f"app_upd_{idx}_{v_idx}")
 
                     if new_visuals:
-                        st.markdown("#### ✨ New Suggestions")
+                        st.markdown("#### New Suggestions")
                         for n_idx, visual in enumerate(new_visuals):
                             with st.container(border=True):
                                 # Source type badge
                                 v_type = visual.get('type', 'visual').lower()
                                 if v_type == 'graph':
-                                    st.caption("📊 **LLM-Generated Graph** (Matplotlib, from research data)")
+                                    st.caption("Graph generated from research data")
                                 elif v_type == 'image':
                                     query = visual.get('query', visual.get('description', ''))
-                                    st.caption(f"🔍 **Web Image** (DuckDuckGo search: _{query[:50]}_)")
+                                    st.caption(f"Web image from DuckDuckGo search: {query[:50]}")
                                 else:
-                                    st.caption(f"📋 **{v_type.capitalize()}**")
+                                    st.caption(v_type.capitalize())
                                 
                                 st.write(f"**{visual.get('type', 'Visual').upper()}**: {visual.get('title', visual.get('description'))}")
                                 st.caption(visual.get('description'))
@@ -697,7 +1035,7 @@ def render_draft_verification():
                 else:
                     st.info("No new visuals suggested.")
 
-                # Show Original Retained Assets — independent of above approvals
+                # Show original retained assets independent of above approvals.
                 if 'asset_ids' in chapter:
                     # Filter for selected assets only
                     selected_original = [a for a in st.session_state.assets 
@@ -705,7 +1043,7 @@ def render_draft_verification():
                                          and a['id'] in st.session_state.selected_asset_ids]
                     
                     if selected_original:
-                         st.markdown("#### 🖼️ Retained Original Assets")
+                         st.markdown("#### Retained Original Assets")
                          for r_idx, r_asset in enumerate(selected_original):
                              with st.container(border=True):
                                  sub_c1, sub_c2 = st.columns([1, 3])
@@ -713,10 +1051,22 @@ def render_draft_verification():
                                      st.image(r_asset['path'], width=60)
                                  with sub_c2:
                                      st.caption(f"**Fig {r_asset['id'][:8]}**: {r_asset.get('short_caption', 'Original Image')}")
-                                     st.caption("📎 **Original Asset** (from source report)")
+                                     st.caption("Original asset from source report")
                                      st.checkbox("Keep Original in Report", value=True, key=f"retained_{idx}_{r_idx}")
 
-    if st.button("🚀 Finalize and Assemble Report", type="primary"):
+    action_col1, action_col2 = st.columns(2)
+    if action_col1.button("Run Quality Gate"):
+        st.session_state.last_cleanup_result = None
+        run_quality_gate()
+        st.rerun()
+    if action_col2.button("Clean Fixable Issues"):
+        st.session_state.last_cleanup_result = clean_fixable_issues(st.session_state.chapters)
+        run_quality_gate()
+        st.rerun()
+
+    render_quality_gate_results(st.session_state.get("quality_gate_result"))
+
+    if st.button("Finalize and Assemble Report", type="primary"):
         # Build approved_visuals from checkbox state for each chapter
         for idx, chapter in enumerate(st.session_state.chapters):
             chapter['approved_visuals'] = []
@@ -751,22 +1101,38 @@ def render_draft_verification():
                                 "title": r_asset.get('short_caption', 'Original Figure'),
                                 "short_caption": r_asset.get('short_caption', '')
                             })
-        
+
+            chapter['draft_text'] = _strip_export_visual_tokens(
+                chapter.get('draft_text', ''),
+                _approved_visual_short_ids(chapter),
+            )
+
+        st.session_state.last_cleanup_result = clean_fixable_issues(st.session_state.chapters)
+        quality_report = run_quality_gate()
+        st.session_state.quality_gate_result = quality_report
+        if has_blocking_issues(quality_report):
+            logger.warning("Blocked final assembly due to quality gate errors.")
+            st.rerun()
+
         st.session_state.current_state = STATE_FINAL_ASSEMBLY
         st.rerun()
 
 def render_final_assembly():
     st.header("6. Final Assembly")
     st.write("Producing visuals and constructing final document...")
+    report_metadata = _serialize_report_metadata(_get_report_metadata())
     
     if "final_doc_path" not in st.session_state:
         with st.status("Generating visuals and building DOCX...") as status:
             for chapter in st.session_state.chapters:
                 if 'approved_visuals' in chapter:
+                    retained_visuals = []
+                    dropped_visual_ids = set()
                     for visual in chapter['approved_visuals']:
                         # Skip if it's an original asset already on disk
                         if 'path' in visual and os.path.exists(visual['path']):
                             logger.info(f"Using existing visual path for {visual.get('original_asset_id', 'new')}")
+                            retained_visuals.append(visual)
                             continue
 
                         status.update(label=f"Generating {visual['type']} for {chapter['title']}...")
@@ -779,8 +1145,24 @@ def render_final_assembly():
                         
                         if 'path' in res:
                             visual['path'] = res['path']
+                            retained_visuals.append(visual)
                         else:
                             logger.error(f"Failed to generate visual: {res.get('error')}")
+                            short_id = _visual_short_id(visual)
+                            if short_id:
+                                dropped_visual_ids.add(short_id)
+
+                    chapter['approved_visuals'] = retained_visuals
+                    if dropped_visual_ids:
+                        chapter['draft_text'] = _strip_export_visual_tokens(
+                            chapter.get('draft_text', ''),
+                            _approved_visual_short_ids(chapter),
+                        )
+                        logger.warning(
+                            "Dropped failed visuals before export for chapter '%s': %s",
+                            chapter.get('title', 'Untitled Chapter'),
+                            ", ".join(sorted(dropped_visual_ids)),
+                        )
             
             status.update(label="Assembling DOCX...")
             report_name = st.session_state.get('original_report_name') or 'Modernized_Report'
@@ -792,7 +1174,8 @@ def render_final_assembly():
             path = build_final_report(
                 st.session_state.chapters, 
                 output_filename,
-                title=report_name
+                title=report_name,
+                report_metadata=report_metadata,
             )
             st.session_state.final_doc_path = path
 
@@ -800,7 +1183,8 @@ def render_final_assembly():
             md_path = build_markdown_report(
                 st.session_state.chapters,
                 output_md_filename,
-                title=report_name
+                title=report_name,
+                report_metadata=report_metadata,
             )
             st.session_state.final_md_path = md_path
 
@@ -810,12 +1194,12 @@ def render_final_assembly():
         if os.path.exists(st.session_state.final_doc_path):
             with open(st.session_state.final_doc_path, "rb") as f:
                 doc_bytes = f.read()
-            st.download_button("📥 Download Report (DOCX)", data=doc_bytes, file_name=os.path.basename(st.session_state.final_doc_path), type="primary")
+            st.download_button("Download Report (DOCX)", data=doc_bytes, file_name=os.path.basename(st.session_state.final_doc_path), type="primary")
     with col2:
         if "final_md_path" in st.session_state and os.path.exists(st.session_state.final_md_path):
             md_file_path = st.session_state.final_md_path
             is_zip = md_file_path.endswith('.zip')
-            btn_text = "📥 Download Report (MD + Images ZIP)" if is_zip else "📥 Download Report (Markdown)"
+            btn_text = "Download Report (MD + Images ZIP)" if is_zip else "Download Report (Markdown)"
             with open(md_file_path, "rb") as f:
                 md_bytes = f.read()
             st.download_button(btn_text, data=md_bytes, file_name=os.path.basename(md_file_path), type="secondary")
@@ -855,7 +1239,12 @@ def render_final_assembly():
                 timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = os.path.join(export_dir_base, f"Modernized_Report_{lang}_{timestamp_str}.docx")
                 report_name = st.session_state.get('original_report_name') or 'Modernized_Report'
-                path = build_final_report(translated_chapters, filename, title=report_name)
+                path = build_final_report(
+                    translated_chapters,
+                    filename,
+                    title=report_name,
+                    report_metadata=report_metadata,
+                )
                 st.session_state.translated_reports[lang] = path
     
     if "translated_reports" in st.session_state:
@@ -863,10 +1252,10 @@ def render_final_assembly():
             if os.path.exists(path):
                 with open(path, "rb") as f:
                     translation_bytes = f.read()
-                st.download_button(f"📥 Download Report ({lang})", data=translation_bytes, file_name=os.path.basename(path))
+                st.download_button(f"Download Report ({lang})", data=translation_bytes, file_name=os.path.basename(path))
 
     st.divider()
-    if st.button("🔄 Start New Report"):
+    if st.button("Start New Report"):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
