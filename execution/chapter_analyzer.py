@@ -1,4 +1,3 @@
-﻿import google.generativeai as genai
 import os
 import json
 import re
@@ -7,6 +6,7 @@ from typing import Dict, List, Any
 from logger_config import setup_logger
 import time
 from llm_json_utils import salvage_ordered_json, try_parse_json
+from gemini_client import generate_content as gemini_generate_content
 
 load_dotenv()
 logger = setup_logger("ChapterAnalyzer")
@@ -23,6 +23,10 @@ ANALYSIS_SCHEMA = {
     "chapter_role": "string",
     "language": "string",
 }
+
+_BATCH_CHAPTER_TEXT_LIMIT = 8000
+_BATCH_MAX_CHARS = 70000
+_BATCH_MAX_CHAPTERS = 10
 
 
 def _detect_language(text: str) -> str:
@@ -90,6 +94,23 @@ def _fallback_analysis(title: str, text: str) -> Dict[str, Any]:
     }
 
 
+def _is_quota_or_rate_limit_error(exc: Exception) -> bool:
+    message = str(exc or "").upper()
+    if "RESOURCE_EXHAUSTED" in message:
+        return True
+    if "429" not in message:
+        return False
+    return any(
+        token in message
+        for token in (
+            "QUOTA",
+            "RATE LIMIT",
+            "GENERATEREQUESTSPERDAYPERPROJECTPERMODEL",
+            "GENERATIVELANGUAGE.GOOGLEAPIS.COM/GENERATE_CONTENT",
+        )
+    )
+
+
 def _normalize_result(result: Dict[str, Any], title: str, text: str) -> Dict[str, Any]:
     fallback = _fallback_analysis(title, text)
     normalized = {
@@ -107,6 +128,248 @@ def _normalize_result(result: Dict[str, Any], title: str, text: str) -> Dict[str
     return normalized
 
 
+def _truncate_for_batch(text: str, limit: int = _BATCH_CHAPTER_TEXT_LIMIT) -> str:
+    if len(text or "") <= limit:
+        return text or ""
+    return f"{(text or '')[:limit]}\n\n(Text truncated for batch analysis)"
+
+
+def _chunk_chapters_for_batch(
+    chapters: List[Dict[str, Any]],
+    max_chars: int = _BATCH_MAX_CHARS,
+    max_chapters: int = _BATCH_MAX_CHAPTERS,
+) -> List[List[Dict[str, Any]]]:
+    chunks: List[List[Dict[str, Any]]] = []
+    current_chunk: List[Dict[str, Any]] = []
+    current_chars = 0
+
+    for index, chapter in enumerate(chapters):
+        prepared = {
+            "id": str(chapter.get("id") or f"chapter_{index + 1}"),
+            "title": str(chapter.get("title", "")).strip(),
+            "content": str(chapter.get("content", "")),
+            "batch_text": _truncate_for_batch(str(chapter.get("content", ""))),
+        }
+        estimated_chars = len(prepared["title"]) + len(prepared["batch_text"]) + 300
+
+        should_flush = (
+            current_chunk
+            and (
+                len(current_chunk) >= max_chapters
+                or current_chars + estimated_chars > max_chars
+            )
+        )
+        if should_flush:
+            chunks.append(current_chunk)
+            current_chunk = []
+            current_chars = 0
+
+        current_chunk.append(prepared)
+        current_chars += estimated_chars
+
+    if current_chunk:
+        chunks.append(current_chunk)
+    return chunks
+
+
+def _extract_batch_items(parsed: Any) -> List[Dict[str, Any]]:
+    if isinstance(parsed, list):
+        return [item for item in parsed if isinstance(item, dict)]
+    if isinstance(parsed, dict):
+        chapters = parsed.get("chapters")
+        if isinstance(chapters, list):
+            return [item for item in chapters if isinstance(item, dict)]
+        for value in parsed.values():
+            if isinstance(value, list) and all(isinstance(item, dict) for item in value):
+                return value
+    return []
+
+
+def _build_batch_prompt(chapters: List[Dict[str, Any]]) -> str:
+    chapter_blocks = []
+    for chapter in chapters:
+        chapter_blocks.append(
+            f"""
+CHAPTER ID:
+{chapter['id']}
+
+CHAPTER TITLE:
+{chapter['title']}
+
+CHAPTER TEXT:
+---
+{chapter['batch_text']}
+---
+"""
+        )
+
+    return f"""
+You are an expert report editor preparing legacy chapters for a future edition update.
+
+You will receive multiple chapters. For EACH chapter, return one JSON object with:
+- id: the exact chapter ID provided
+- summary: concise 1-2 paragraph chapter summary in the same language as the chapter
+- keywords: 5-8 strong research keywords for updating this chapter
+- core_claims: up to 5 major claims or takeaways from the original chapter
+- dated_facts: up to 5 original facts/statements that contain dates, years, or timeline-sensitive information
+- named_entities: up to 10 important organizations, products, institutions, or people mentioned
+- stats: up to 8 important numbers, percentages, or financial/statistical values from the original text
+- original_citations: citation markers or source markers explicitly present in the original text
+- original_figures: figure, table, image, or asset references explicitly present in the original text
+- chapter_role: one of introduction, body, conclusion, appendix
+- language: detected language of the chapter
+
+Return ONLY valid JSON in this format:
+{{
+  "chapters": [
+    {{
+      "id": "chapter-id",
+      "summary": "...",
+      "keywords": ["..."],
+      "core_claims": ["..."],
+      "dated_facts": ["..."],
+      "named_entities": ["..."],
+      "stats": ["..."],
+      "original_citations": ["..."],
+      "original_figures": ["..."],
+      "chapter_role": "body",
+      "language": "English"
+    }}
+  ]
+}}
+
+Every input chapter must produce exactly one output item. Do not omit IDs. Keep the output faithful to each chapter and do not invent facts.
+
+CHAPTERS:
+{"".join(chapter_blocks)}
+"""
+
+
+def _analyze_chunk_with_batch_model(api_key: str, chapters: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    prompt = _build_batch_prompt(chapters)
+
+    start_time = time.time()
+    response = gemini_generate_content(
+        api_key=api_key,
+        model='gemini-2.5-flash',
+        contents=prompt,
+        response_mime_type="application/json",
+    )
+    text_resp = response.text.strip()
+    parsed = try_parse_json(text_resp)
+    items = _extract_batch_items(parsed)
+    if not items:
+        raise ValueError("Batch analyzer returned no chapter items.")
+
+    results_by_id: Dict[str, Dict[str, Any]] = {}
+    for item in items:
+        chapter_id = str(item.get("id", "")).strip()
+        if not chapter_id:
+            continue
+        results_by_id[chapter_id] = item
+
+    logger.info(
+        "Batch chapter analysis complete for %s chapter(s) in %.2fs.",
+        len(chapters),
+        time.time() - start_time,
+    )
+    return results_by_id
+
+
+def analyze_chapters_batch(
+    chapters: List[Dict[str, Any]],
+    max_chars: int = _BATCH_MAX_CHARS,
+    max_chapters: int = _BATCH_MAX_CHAPTERS,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Analyzes multiple chapters in batched Gemini calls and returns a mapping of
+    chapter_id -> normalized analysis. If a batch response is malformed or
+    incomplete, the missing chapters automatically fall back to single-chapter
+    analysis to preserve behavior.
+    """
+    if not chapters:
+        return {}
+
+    logger.info("Starting batched analysis for %s chapter(s).", len(chapters))
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        logger.error("GEMINI_API_KEY missing.")
+        return {
+            str(chapter.get("id") or f"chapter_{index + 1}"): _fallback_analysis(
+                str(chapter.get("title", "")),
+                str(chapter.get("content", "")),
+            )
+            for index, chapter in enumerate(chapters)
+        }
+
+    normalized_results: Dict[str, Dict[str, Any]] = {}
+    chunks = _chunk_chapters_for_batch(chapters, max_chars=max_chars, max_chapters=max_chapters)
+
+    skip_remote_analysis = False
+
+    for chunk_index, chunk in enumerate(chunks, start=1):
+        logger.info(
+            "Analyzing chunk %s/%s with %s chapter(s).",
+            chunk_index,
+            len(chunks),
+            len(chunk),
+        )
+
+        if skip_remote_analysis:
+            logger.warning(
+                "Skipping Gemini batch analysis for chunk %s/%s because a prior chunk hit quota/rate limits. Using local fallback analysis.",
+                chunk_index,
+                len(chunks),
+            )
+            for chapter in chunk:
+                chapter_id = chapter["id"]
+                normalized_results[chapter_id] = _fallback_analysis(chapter["title"], chapter["content"])
+            continue
+
+        chunk_results: Dict[str, Dict[str, Any]] = {}
+        chunk_hit_quota_limit = False
+        try:
+            chunk_results = _analyze_chunk_with_batch_model(api_key, chunk)
+        except Exception as exc:
+            chunk_hit_quota_limit = _is_quota_or_rate_limit_error(exc)
+            if chunk_hit_quota_limit:
+                skip_remote_analysis = True
+                logger.warning(
+                    "Batch analysis hit quota/rate limits for chunk %s/%s: %s. Using local fallback analysis for this chunk and remaining chunks.",
+                    chunk_index,
+                    len(chunks),
+                    exc,
+                    exc_info=True,
+                )
+            else:
+                logger.warning(
+                    "Batch analysis failed for chunk %s/%s: %s. Falling back to single-chapter analysis.",
+                    chunk_index,
+                    len(chunks),
+                    exc,
+                    exc_info=True,
+                )
+
+        for chapter in chunk:
+            chapter_id = chapter["id"]
+            raw_result = chunk_results.get(chapter_id)
+            if raw_result is None:
+                if chunk_hit_quota_limit:
+                    normalized_results[chapter_id] = _fallback_analysis(chapter["title"], chapter["content"])
+                    continue
+                logger.warning(
+                    "Missing batch analysis result for chapter '%s' (%s). Falling back to single-chapter analysis.",
+                    chapter.get("title", "Untitled Chapter"),
+                    chapter_id,
+                )
+                normalized_results[chapter_id] = analyze_chapter_content(chapter["title"], chapter["content"])
+                continue
+
+            normalized_results[chapter_id] = _normalize_result(raw_result, chapter["title"], chapter["content"])
+
+    return normalized_results
+
+
 def analyze_chapter_content(title: str, text: str) -> Dict[str, Any]:
     """
     Analyzes raw chapter text to generate a structured baseline used to update
@@ -118,9 +381,6 @@ def analyze_chapter_content(title: str, text: str) -> Dict[str, Any]:
     if not api_key:
         logger.error("GEMINI_API_KEY missing.")
         return _fallback_analysis(title, text)
-
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-flash')
 
     prompt = f"""
     You are an expert report editor preparing a legacy chapter for a future edition update.
@@ -152,11 +412,14 @@ def analyze_chapter_content(title: str, text: str) -> Dict[str, Any]:
     Keep the output faithful to the original text. Do not invent facts.
     """
 
-    generation_config = {"response_mime_type": "application/json"}
-
     start_time = time.time()
     try:
-        response = model.generate_content(prompt, generation_config=generation_config)
+        response = gemini_generate_content(
+            api_key=api_key,
+            model='gemini-2.5-flash',
+            contents=prompt,
+            response_mime_type="application/json",
+        )
         text_resp = response.text.strip()
         try:
             result = try_parse_json(text_resp)

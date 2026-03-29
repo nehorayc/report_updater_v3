@@ -5,8 +5,8 @@ import os
 import uuid
 import base64
 from io import BytesIO
-import google.generativeai as genai
 from dotenv import load_dotenv
+from gemini_client import generate_content as gemini_generate_content
 
 load_dotenv()
 
@@ -17,6 +17,7 @@ logger = setup_logger("GraphGenerator")
 
 # Professional color palette for static fallback
 _CORP_COLORS = ['#2563EB', '#16A34A', '#DC2626', '#D97706', '#7C3AED', '#0891B2']
+_SUPPORTED_STATIC_CHART_TYPES = {'bar', 'line', 'pie'}
 
 # Apply professional style to static charts
 try:
@@ -82,6 +83,23 @@ def _coerce_numeric_series(values, target_len: int) -> list[float]:
     return normalized
 
 
+def _should_use_static_first(visual_dict: dict) -> bool:
+    data = visual_dict.get("data_points", {}) or {}
+    labels = data.get("labels", [])
+    values = data.get("values", [])
+    chart_type = str(visual_dict.get("chart_type") or "bar").lower()
+
+    if chart_type not in _SUPPORTED_STATIC_CHART_TYPES:
+        return False
+    if not isinstance(labels, list) or not labels:
+        return False
+    if isinstance(values, dict):
+        return bool(values) and chart_type in {"bar", "line"}
+    if isinstance(values, list):
+        return bool(values)
+    return values is not None
+
+
 def generate_graph_with_llm(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
     """
     Uses Gemini to write a Matplotlib Python script for the given visual,
@@ -141,13 +159,14 @@ REQUIREMENTS:
 Respond with ONLY the executable Python code. No explanations, no markdown fences.
 """
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-flash')
-
     def _try_exec(prompt: str) -> tuple:
         """Returns (code, result_dict)."""
         start = time.time()
-        response = model.generate_content(prompt)
+        response = gemini_generate_content(
+            api_key=api_key,
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
         logger.info(f"LLM code generated in {time.time()-start:.2f}s")
 
         code = response.text.strip()
@@ -191,21 +210,7 @@ Respond with ONLY the executable Python code. No explanations, no markdown fence
         return {"error": str(e)}
 
 
-def generate_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
-    """
-    Generates a graph image. Tries LLM-based generation first (any chart type,
-    professional styling). Falls back to static chart on failure.
-    Static fallback supports bar, line, and pie chart types.
-    """
-    logger.info(f"Starting graph generation: '{visual_dict.get('title')}'")
-
-    # --- Try LLM-based generation first ---
-    llm_result = generate_graph_with_llm(visual_dict, output_dir)
-    if "path" in llm_result:
-        return llm_result
-    logger.warning(f"LLM graph failed ({llm_result.get('error')}), falling back to static chart.")
-
-    # --- Static fallback ---
+def _generate_static_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
@@ -301,6 +306,34 @@ def generate_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
         logger.error(f"Error generating static graph '{title}': {e}", exc_info=True)
         plt.close()
         return {"error": str(e)}
+
+
+def generate_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
+    """
+    Generates a graph image. Uses deterministic local rendering first for simple
+    structured charts, and falls back to the LLM path for complex or
+    underspecified visuals.
+    """
+    logger.info(f"Starting graph generation: '{visual_dict.get('title')}'")
+
+    if _should_use_static_first(visual_dict):
+        logger.info("Using static graph renderer first for structured chart data.")
+        static_result = _generate_static_graph(visual_dict, output_dir)
+        if "path" in static_result:
+            return static_result
+
+        logger.warning(
+            "Static-first graph generation failed (%s), trying LLM fallback.",
+            static_result.get("error"),
+        )
+        llm_result = generate_graph_with_llm(visual_dict, output_dir)
+        return llm_result if "path" in llm_result else static_result
+
+    llm_result = generate_graph_with_llm(visual_dict, output_dir)
+    if "path" in llm_result:
+        return llm_result
+    logger.warning(f"LLM graph failed ({llm_result.get('error')}), falling back to static chart.")
+    return _generate_static_graph(visual_dict, output_dir)
 
 
 if __name__ == "__main__":

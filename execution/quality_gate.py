@@ -19,6 +19,12 @@ URL_PATTERN = re.compile(r"^https?://\S+$", re.IGNORECASE)
 CITATION_PATTERN = re.compile(r"\[\s*(Original(?:\s+Report)?|\d+)\s*\]", re.IGNORECASE)
 RAW_ORIGINAL_CITATION_PATTERN = re.compile(r"\[\s*Original\s+Report\s*\]", re.IGNORECASE)
 STRUCTURAL_PARAGRAPH_PATTERN = re.compile(r"^(?:[#|]|[-*]\s|\d+\.\s|\[(?:Figure|Asset|Image|Figura|איור|תמונה|visual))", re.IGNORECASE)
+META_PROMPT_LEAK_PATTERN = re.compile(
+    r"(diverging from the original report's focus|align with the specified user objective|this updated edition addresses the topic of|user objective)",
+    re.IGNORECASE,
+)
+PRIVATE_USE_PATTERN = re.compile(r"[\uE000-\uF8FF]")
+MARKDOWN_HEADING_PATTERN = re.compile(r"^\s*#{1,6}\s+(.+?)\s*$")
 
 
 def _issue(
@@ -101,6 +107,56 @@ def _is_structural_paragraph(paragraph: str) -> bool:
     return False
 
 
+def _normalize_heading_label(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "").strip().strip(":")).lower()
+
+
+def _has_duplicate_lead_heading(chapter: Dict[str, Any]) -> bool:
+    title = _normalize_heading_label(chapter.get("title", ""))
+    if not title:
+        return False
+
+    for line in str(chapter.get("draft_text", "") or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        match = MARKDOWN_HEADING_PATTERN.match(stripped)
+        if not match:
+            return False
+        return _normalize_heading_label(match.group(1)) == title
+    return False
+
+
+def _looks_like_artifact_line(line: str) -> bool:
+    stripped = str(line or "").strip()
+    if not stripped:
+        return False
+    if PRIVATE_USE_PATTERN.search(stripped):
+        return True
+    if stripped.startswith("#") or stripped.startswith("-") or stripped.startswith("*"):
+        return False
+
+    tokens = stripped.split()
+    numeric_tokens = sum(1 for token in tokens if re.search(r"\d", token))
+    if (
+        len(tokens) >= 4
+        and len({token.lower() for token in tokens}) <= max(2, len(tokens) // 2)
+        and numeric_tokens >= 1
+        and not re.search(r"[.!?;:]\s*$", stripped)
+    ):
+        return True
+
+    if (
+        len(tokens) <= 8
+        and numeric_tokens >= 2
+        and not re.search(r"[.!?;:]\s*$", stripped)
+        and not re.search(r"\[\d+\]", stripped)
+    ):
+        return True
+
+    return False
+
+
 def _nearby_numeric_citations(paragraphs: List[str], index: int) -> List[str]:
     citations: List[str] = []
     for neighbor_index in (index - 1, index + 1):
@@ -124,6 +180,41 @@ def _chapter_issues(chapter: Dict[str, Any], start_year: Optional[int], end_year
     local_reference_indices = set()
     for position, ref in enumerate(references, start=1):
         local_reference_indices.add(_reference_index(ref, position))
+
+    if META_PROMPT_LEAK_PATTERN.search(draft_text):
+        issues.append(
+            _issue(
+                "error",
+                "meta_prompt_leakage",
+                "The chapter text appears to leak prompt or meta-update framing instead of report prose.",
+                hint="Regenerate the chapter with stronger source anchoring or remove the meta framing manually.",
+                context=_compact_context(draft_text),
+            )
+        )
+
+    if _has_duplicate_lead_heading(chapter):
+        issues.append(
+            _issue(
+                "warning",
+                "duplicate_lead_heading",
+                "The chapter body starts by repeating the chapter title as a heading.",
+                hint="Clean Fixable Issues can remove the duplicated heading so the export does not show the same title twice.",
+                auto_fixable=True,
+                context=str(chapter.get("title", "Untitled Chapter")),
+            )
+        )
+
+    if any(_looks_like_artifact_line(line) for line in draft_text.splitlines()):
+        issues.append(
+            _issue(
+                "warning",
+                "pdf_artifact_text",
+                "The chapter still contains lines that look like PDF extraction or chart/table artifact text.",
+                hint="Clean Fixable Issues can remove obvious artifact lines before export.",
+                auto_fixable=True,
+                context=_compact_context(draft_text),
+            )
+        )
 
     for paragraph_number, paragraph in enumerate(paragraphs, start=1):
         if _is_structural_paragraph(paragraph):
@@ -372,6 +463,46 @@ def _remove_raw_visual_tokens(chapter: Dict[str, Any]) -> int:
     return removals
 
 
+def _remove_duplicate_lead_heading(chapter: Dict[str, Any]) -> int:
+    draft_text = str(chapter.get("draft_text", "") or "")
+    if not draft_text or not _has_duplicate_lead_heading(chapter):
+        return 0
+
+    lines = draft_text.splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if MARKDOWN_HEADING_PATTERN.match(stripped):
+            del lines[index]
+            cleaned = "\n".join(lines)
+            cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+            chapter["draft_text"] = cleaned
+            return 1
+        return 0
+    return 0
+
+
+def _remove_artifact_lines(chapter: Dict[str, Any]) -> int:
+    draft_text = str(chapter.get("draft_text", "") or "")
+    if not draft_text:
+        return 0
+
+    removals = 0
+    cleaned_lines: List[str] = []
+    for line in draft_text.splitlines():
+        if _looks_like_artifact_line(line):
+            removals += 1
+            continue
+        cleaned_lines.append(line.rstrip())
+
+    if removals:
+        cleaned = "\n".join(cleaned_lines)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        chapter["draft_text"] = cleaned
+    return removals
+
+
 def _remove_invalid_reference_urls(chapter: Dict[str, Any]) -> int:
     fixes = 0
     for ref in chapter.get("references", []):
@@ -394,6 +525,8 @@ def clean_fixable_issues(chapters: List[Dict[str, Any]]) -> Dict[str, Any]:
             "borrowed_citation_fixes": _borrow_nearby_citations(chapter),
             "figure_marker_fixes": _remove_broken_figure_markers(chapter),
             "raw_visual_token_fixes": _remove_raw_visual_tokens(chapter),
+            "duplicate_heading_fixes": _remove_duplicate_lead_heading(chapter),
+            "artifact_line_fixes": _remove_artifact_lines(chapter),
             "reference_url_fixes": _remove_invalid_reference_urls(chapter),
         }
         chapter_fixes["total_fixes"] = (
@@ -401,6 +534,8 @@ def clean_fixable_issues(chapters: List[Dict[str, Any]]) -> Dict[str, Any]:
             + chapter_fixes["borrowed_citation_fixes"]
             + chapter_fixes["figure_marker_fixes"]
             + chapter_fixes["raw_visual_token_fixes"]
+            + chapter_fixes["duplicate_heading_fixes"]
+            + chapter_fixes["artifact_line_fixes"]
             + chapter_fixes["reference_url_fixes"]
         )
         total_fixes += chapter_fixes["total_fixes"]

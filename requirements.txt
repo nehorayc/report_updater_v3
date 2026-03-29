@@ -10,7 +10,7 @@ pymupdf
 matplotlib
 plotly
 duckduckgo-search
-google-generativeai
+google-genai
 Pillow
 pytest
 pytest-cov

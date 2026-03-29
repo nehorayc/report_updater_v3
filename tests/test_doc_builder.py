@@ -74,3 +74,28 @@ def test_markdown_and_docx_exports_strip_raw_visual_tokens(tmp_path: Path, repor
 
     assert "[visual:" not in document_xml
     assert "Dummy Visual" in document_xml
+
+
+def test_exports_omit_synthetic_front_matter_by_default(tmp_path: Path, report_metadata):
+    chapter = {
+        "title": "Background",
+        "draft_text": "DNA storage remains relevant for archival workloads [1].",
+        "references": [
+            {"index": 1, "title": "Recent Update", "url": "https://example.com/update", "category": "Web"}
+        ],
+    }
+
+    markdown_zip = build_markdown_report(
+        [chapter],
+        output_path=str(tmp_path / "report.md"),
+        title="DNA Report",
+        report_metadata=report_metadata,
+    )
+    with zipfile.ZipFile(markdown_zip) as archive:
+        md_name = next(name for name in archive.namelist() if name.endswith(".md"))
+        markdown_text = archive.read(md_name).decode("utf-8")
+
+    assert "Updated and Researched via AI Agent" not in markdown_text
+    assert "\n## Executive Summary\n" not in markdown_text
+    assert "\n## Methodology\n" not in markdown_text
+    assert markdown_text.count("# Background") == 1

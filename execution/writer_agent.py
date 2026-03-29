@@ -4,9 +4,9 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-import google.generativeai as genai
 from dotenv import load_dotenv
 
+from gemini_client import generate_content as gemini_generate_content
 from llm_json_utils import salvage_ordered_json, try_parse_json
 from logger_config import setup_logger
 
@@ -28,6 +28,8 @@ WRITER_SCHEMA = {
 OUTLINE_LINE_PATTERN = re.compile(r"^\s*(?:\d+[.)]|[A-Za-z][.)]|[\u0590-\u05EA][.)])\s+")
 BULLET_LINE_PATTERN = re.compile(r"^\s*[*-]\s+(.*)$")
 BULLET_HEADING_PATTERN = re.compile(r"^\s*[*-]\s+\*\*(.+?)\*\*:?\s*(.*)$")
+MARKDOWN_HEADING_PATTERN = re.compile(r"^\s*#{1,6}\s+(.+?)\s*$")
+PRIVATE_USE_PATTERN = re.compile(r"[\uE000-\uF8FF]")
 
 
 def _stringify_findings(research_findings: List[Dict[str, Any]]) -> str:
@@ -90,6 +92,129 @@ def _infer_text_language(text: str) -> str:
     return "Hebrew" if re.search(r"[\u0590-\u05FF]", text or "") else "English"
 
 
+def _looks_like_source_artifact_line(line: str) -> bool:
+    stripped = str(line or "").strip()
+    if not stripped:
+        return False
+    if PRIVATE_USE_PATTERN.search(stripped):
+        return True
+    if stripped.startswith("#") or BULLET_LINE_PATTERN.match(stripped):
+        return False
+
+    tokens = stripped.split()
+    numeric_tokens = sum(1 for token in tokens if re.search(r"\d", token))
+    lowered = f" {stripped.lower()} "
+    verb_hints = (
+        " is ",
+        " are ",
+        " was ",
+        " were ",
+        " has ",
+        " have ",
+        " had ",
+        " can ",
+        " could ",
+        " may ",
+        " might ",
+        " should ",
+        " will ",
+        " would ",
+        " remains ",
+        " indicate ",
+        " indicates ",
+        " suggests ",
+        " shows ",
+        " reflects ",
+        " highlights ",
+    )
+
+    if (
+        len(tokens) >= 4
+        and len({token.lower() for token in tokens}) <= max(2, len(tokens) // 2)
+        and numeric_tokens >= 1
+        and not re.search(r"[.!?;:]\s*$", stripped)
+    ):
+        return True
+
+    if (
+        len(tokens) <= 8
+        and numeric_tokens >= 2
+        and not re.search(r"[.!?;:]\s*$", stripped)
+        and not any(hint in lowered for hint in verb_hints)
+        and not re.search(r"\[\d+\]", stripped)
+    ):
+        return True
+
+    return False
+
+
+def _sanitize_source_text(text: str) -> str:
+    if not text:
+        return text
+
+    cleaned_lines: List[str] = []
+    for line in text.splitlines():
+        if _looks_like_source_artifact_line(line):
+            continue
+        cleaned_lines.append(line.rstrip())
+
+    sanitized = "\n".join(cleaned_lines)
+    sanitized = re.sub(r"\n{3,}", "\n\n", sanitized).strip()
+    return sanitized or text
+
+
+def _extract_source_headings(text: str, limit: int = 12) -> List[str]:
+    headings: List[str] = []
+    seen = set()
+    for line in str(text or "").splitlines():
+        match = MARKDOWN_HEADING_PATTERN.match(line.strip())
+        if not match:
+            continue
+        heading = str(match.group(1)).strip()
+        if not heading:
+            continue
+        normalized = heading.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        headings.append(heading)
+        if len(headings) >= limit:
+            break
+    return headings
+
+
+def _format_source_structure_guidance(source_chapter_title: str, headings: List[str]) -> str:
+    title = str(source_chapter_title or "").strip() or "Untitled Chapter"
+    if not headings:
+        return (
+            f"- Source chapter title: {title}\n"
+            "- No reliable internal headings were extracted. Keep the chapter tightly scoped to the source and use only minimal subheads if needed."
+        )
+
+    heading_lines = "\n".join(f"- Preserve or closely mirror this heading: {heading}" for heading in headings)
+    return f"- Source chapter title: {title}\n{heading_lines}"
+
+
+def _format_prior_chapter_context(prior_chapter_context: List[Dict[str, Any]]) -> str:
+    if not prior_chapter_context:
+        return "- No prior approved chapters are available yet."
+
+    lines: List[str] = []
+    for item in prior_chapter_context:
+        title = str(item.get("title", "Untitled Chapter")).strip() or "Untitled Chapter"
+        summary = str(item.get("summary", "")).strip()
+        key_points = item.get("key_points", []) if isinstance(item.get("key_points"), list) else []
+        open_questions = item.get("open_questions", []) if isinstance(item.get("open_questions"), list) else []
+        lines.append(f"- {title}")
+        if summary:
+            lines.append(f"  Summary: {summary}")
+        if key_points:
+            lines.append(f"  Established points: {'; '.join(str(point) for point in key_points)}")
+        if open_questions:
+            lines.append(f"  Open questions: {'; '.join(str(point) for point in open_questions)}")
+    return "\n".join(lines)
+
+
 def _soften_outline_structure(text: str) -> str:
     if not text:
         return text
@@ -150,6 +275,29 @@ def _reshape_bullet_heavy_text(text: str) -> str:
     reshaped = "\n".join(reshaped_lines)
     reshaped = re.sub(r"\n{3,}", "\n\n", reshaped)
     return reshaped.strip()
+
+
+def _remove_duplicate_lead_heading(text: str, chapter_title: str) -> str:
+    if not text or not chapter_title:
+        return text
+
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        match = MARKDOWN_HEADING_PATTERN.match(stripped)
+        if not match:
+            return text
+        heading_text = re.sub(r"\s+", " ", match.group(1)).strip().strip(":").lower()
+        title_text = re.sub(r"\s+", " ", chapter_title).strip().strip(":").lower()
+        if heading_text == title_text:
+            del lines[index]
+            cleaned = "\n".join(lines)
+            cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+            return cleaned
+        return text
+    return text
 
 
 def _normalize_reference_category(raw_category: Any, source_hint: Any = None) -> str:
@@ -328,6 +476,7 @@ def write_chapter(
     blueprint: Dict,
     writing_style: str = "Professional",
     assets_to_update: Optional[List[Dict]] = None,
+    prior_chapter_context: Optional[List[Dict[str, Any]]] = None,
     target_word_count: int = 500,
     temperature: float = 0.5,
 ) -> Dict:
@@ -342,9 +491,7 @@ def write_chapter(
         return {"error": "GEMINI_API_KEY not found"}
 
     assets_to_update = assets_to_update or []
-
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    prior_chapter_context = prior_chapter_context or []
 
     findings_str = _stringify_findings(research_findings)
     evidence_snapshot = _build_evidence_snapshot(research_findings)
@@ -358,7 +505,13 @@ def write_chapter(
     edition_title = blueprint.get("edition_title", "")
     chapter_role = blueprint.get("chapter_role", "body")
     preserve_original_voice = blueprint.get("preserve_original_voice", True)
-    source_language = _infer_text_language(original_text)
+    source_chapter_title = blueprint.get("source_chapter_title", blueprint.get("topic", ""))
+    report_subject = blueprint.get("report_subject", edition_title or "")
+    sanitized_original_text = _sanitize_source_text(original_text)
+    source_language = _infer_text_language(sanitized_original_text)
+    source_headings = _extract_source_headings(sanitized_original_text)
+    source_structure_guidance = _format_source_structure_guidance(source_chapter_title, source_headings)
+    prior_context_guidance = _format_prior_chapter_context(prior_chapter_context)
 
     update_instructions = ""
     if assets_to_update:
@@ -386,13 +539,19 @@ def write_chapter(
             "For each of these items, you MUST include a [Figure ID] marker in the appropriate place in "
             "'text_content' (using the ID provided) so it appears in the final report.\n"
         )
-    task_update_instruction = f"7. {update_instructions.strip()}" if update_instructions.strip() else ""
+    task_update_instruction = f"9. {update_instructions.strip()}" if update_instructions.strip() else ""
 
     prompt = f"""
 Original Report Chapter Text:
 ---
-{original_text}
+{sanitized_original_text}
 ---
+
+Source Chapter Structure:
+{source_structure_guidance}
+
+Approved Earlier Chapters for Continuity:
+{prior_context_guidance}
 
 Original Chapter Baseline:
 - Chapter Role: {chapter_role}
@@ -402,6 +561,7 @@ Original Chapter Baseline:
 
 Report Update Metadata:
 - Edition Title: {edition_title or 'Updated Edition'}
+- Report Subject: {report_subject or edition_title or 'Use the source chapter context'}
 - Original Report Date: {original_report_date}
 - Update Window Start: {update_start_date}
 - Update Through Date: {update_end_date}
@@ -427,7 +587,7 @@ User Objective (Blueprint):
 THINK STEP BY STEP (do not output this reasoning, just follow the process):
 Step 1 - Identify the chapter's original thesis, strongest still-valid claims, and outdated claims.
 Step 2 - Match the outdated claims to the strongest research findings from the update window.
-Step 3 - Write a new-edition chapter that preserves the original report's through-line while updating the evidence and implications.
+Step 3 - Write a new-edition chapter that preserves the source chapter's scope and structure while updating the evidence and implications.
 
 CRITICAL WRITING RULES:
 - You are producing a NEW EDITION of the original report chapter, not a generic rewrite.
@@ -435,27 +595,32 @@ CRITICAL WRITING RULES:
 - If Output Language is "Match Source Language", keep the entire output in {source_language}.
 - If Output Language is explicitly set to English or Hebrew, the entire output must stay in that language, including chapter prose, takeaways, claims, visual titles, and section labels you generate.
 - The chapter_title field MUST also be in that same language.
+- Keep this chapter on the SAME subject as the source chapter and the overall report subject.
+- If the source chapter title is generic or abstract, interpret it within the report subject "{report_subject or edition_title or 'the source report'}"; do not turn it into a standalone encyclopedia article.
 - Preserve the original chapter's logic, intent, and strongest insights where they still hold up.
 - The updated chapter should clearly reflect developments between {update_start_date} and {update_end_date}.
 - Use the original text for context and continuity, but let the new evidence carry the chapter forward.
-- Open with the most important change since the original edition, not background filler.
+- Treat the source chapter structure as the default scaffold. If the source includes internal headings, preserve them in the same order unless one is clearly broken or redundant.
+- Use earlier approved chapters only to maintain continuity, terminology, transitions, and non-overlap. They are supporting context, not the authority for this chapter.
+- Ignore obvious PDF/OCR debris in the source text, such as isolated glyphs, repeated legend labels, axis fragments, or broken table lines, unless prose context clearly confirms their meaning.
 - Every paragraph containing concrete facts, figures, dates, named organizations, or comparative claims must include at least one inline citation.
 - Attribute disagreements explicitly when sources conflict. Name the organizations, publications, or researchers behind the disagreement.
 - Prefer exact years, dates, organizations, model names, products, laws, datasets, and figures over generic wording.
 - Do not invent statistics, organizations, or URLs. If a detail is uncertain, state the uncertainty instead of guessing.
-- Do NOT write phrases like "this section was updated", "compared to the previous edition", or "in the old report".
+- Do NOT write phrases like "this updated edition", "this section was updated", "align with the specified user objective", "diverging from the original report's focus", "compared to the previous edition", or "in the old report".
 - Do NOT flatten conflicting evidence. If the evidence is mixed, state that clearly and professionally.
-- Do NOT preserve numbered or lettered outline structure from the source unless absolutely necessary.
-- Prefer flowing report prose with short subsection headers over memo-style numbering like 1., 2., a., b., or א., ב..
+- Do not replace the source chapter structure with a generic template like "current state / implications / near-term outlook" unless the source chapter truly has no usable structure.
+- Prefer report prose with restrained subsection headers. Avoid memo-style numbering like 1., 2., a., b., or א., ב.. Avoid turning the chapter into a bullet-heavy answer.
 
 TASK:
 1. Produce an updated-edition chapter for the requested audience.
-2. Keep the chapter structure readable and useful: opening change statement, context, developments, current state, implications, near-term outlook.
+2. Preserve the source chapter's scope and internal section structure by default. If the source has no usable internal headings, create only a light structure that still reads like a report chapter.
 3. Make the chapter evidence-dense, not generic. Every paragraph should either add new evidence, refine an original claim, or explain a decision-relevant implication.
 4. Be specific: use named organizations, exact numbers, exact years, and concrete developments whenever available.
 5. Use numbered inline citations: [1], [2], [3], etc. Every factual claim from research should have citation support.
 6. Include the original report as a reference when original claims or historical framing are retained.
 7. Keep the chapter flowing. Use bullets only when they materially improve readability; otherwise write coherent narrative paragraphs.
+8. Avoid repeating material already established in prior approved chapters unless this chapter needs a concise bridge or contrast.
 {task_update_instruction}
 
 CRITICAL - VISUAL MARKERS:
@@ -474,7 +639,7 @@ MANDATORY OUTPUT FIELDS:
 - new_claims: 2-6 short bullets capturing new developments since the original report
 - open_questions: 0-5 unresolved questions, uncertainties, or tensions worth noting
 - chapter_title: the final chapter title in the selected output language
-- text_content: the actual updated chapter, with factual paragraphs cited and the first paragraph clearly answering what changed
+- text_content: the actual updated chapter, with factual paragraphs cited and an opening paragraph that establishes the updated state of this chapter within the source scope
 - visual_suggestions: at least 2 new visuals, using EXACTLY "graph" or "image" as the type
 - references: ordered list containing only sources actually used in the text and matching the inline citation numbers
 
@@ -525,15 +690,16 @@ OUTPUT FORMAT (MANDATORY JSON):
 }}
 """
 
-    generation_config = {
-        "response_mime_type": "application/json",
-        "temperature": temperature,
-    }
-
     logger.debug(f"Prompt sent to Gemini (truncated): {prompt[:500]}...")
     start_time = time.time()
     try:
-        response = model.generate_content(prompt, generation_config=generation_config)
+        response = gemini_generate_content(
+            api_key=api_key,
+            model="gemini-2.5-flash",
+            contents=prompt,
+            response_mime_type="application/json",
+            temperature=temperature,
+        )
         latency = time.time() - start_time
         logger.info(f"Gemini response received in {latency:.2f}s.")
 
@@ -552,7 +718,13 @@ OUTPUT FORMAT (MANDATORY JSON):
             logger.warning("Writer JSON decode failed, attempting ordered salvage.")
             parsed = salvage_ordered_json(text, WRITER_SCHEMA)
 
-        normalized = _normalize_response(parsed, blueprint.get("topic") or blueprint.get("title") or "Untitled Chapter")
+        normalized = _normalize_response(
+            parsed,
+            blueprint.get("source_chapter_title")
+            or blueprint.get("topic")
+            or blueprint.get("title")
+            or "Untitled Chapter",
+        )
         uses_original_marker = bool(re.search(r"\[\s*Original(?:\s+Report)?\s*\]", normalized.get("text_content", ""), re.IGNORECASE))
         normalized_references, citation_map = _normalize_references(
             parsed.get("references", []),
@@ -565,6 +737,10 @@ OUTPUT FORMAT (MANDATORY JSON):
         normalized["text_content"] = _normalize_inline_citations(normalized.get("text_content", ""), citation_map)
         normalized["text_content"] = _soften_outline_structure(normalized.get("text_content", ""))
         normalized["text_content"] = _reshape_bullet_heavy_text(normalized.get("text_content", ""))
+        normalized["text_content"] = _remove_duplicate_lead_heading(
+            normalized.get("text_content", ""),
+            normalized.get("chapter_title", ""),
+        )
         logger.info(f"Successfully generated chapter. Text length: {len(normalized.get('text_content', ''))}")
         return normalized
     except Exception as e:

@@ -42,10 +42,21 @@ logger = setup_logger("StreamlitApp")
 
 from parse_pdf import extract_pdf_content
 from parse_docx import extract_docx_content
-from vision_service import analyze_batch_assets
-from translator import translate_content
-from chapter_analyzer import analyze_chapter_content
+from vision_service import (
+    analyze_batch_assets,
+    consume_runtime_diagnostics as consume_vision_runtime_diagnostics,
+    reset_runtime_diagnostics as reset_vision_runtime_diagnostics,
+)
+from asset_selection_helpers import (
+    asset_selection_widget_key,
+    build_asset_to_chapters,
+    initialize_asset_selection_state,
+    selected_asset_ids_from_widget_state,
+)
+from translator import translate_texts_batch
+from chapter_analyzer import analyze_chapters_batch
 from report_metadata_analyzer import infer_report_metadata
+from report_context import build_chapter_blueprint_defaults, build_prior_chapter_context
 
 # State Machine Constants
 STATE_UPLOAD_EXTRACT = "UPLOAD_AND_EXTRACT"
@@ -99,6 +110,9 @@ if "last_cleanup_result" not in st.session_state:
 
 if "debug_mode" not in st.session_state:
     st.session_state.debug_mode = True
+
+if "ui_notices" not in st.session_state:
+    st.session_state.ui_notices = []
 
 # --- Sidebar ---
 st.sidebar.title("Navigation")
@@ -181,6 +195,68 @@ def _serialize_report_metadata(metadata):
         "edition_title": metadata.get("edition_title", ""),
         "preserve_original_voice": bool(metadata.get("preserve_original_voice", True)),
     }
+
+
+def _queue_ui_notice(level: str, message: str, source: str = "general") -> None:
+    normalized = re.sub(r"\s+", " ", str(message or "")).strip()
+    if not normalized:
+        return
+
+    notice = {"level": level, "message": normalized, "source": source}
+    notices = st.session_state.setdefault("ui_notices", [])
+    if notice not in notices:
+        notices.append(notice)
+        if len(notices) > 10:
+            del notices[:-10]
+
+
+def _clear_ui_notices(source: str | None = None) -> None:
+    notices = st.session_state.setdefault("ui_notices", [])
+    if source is None:
+        notices.clear()
+        return
+    st.session_state.ui_notices = [notice for notice in notices if notice.get("source") != source]
+
+
+def _render_ui_notices() -> None:
+    for notice in st.session_state.get("ui_notices", []):
+        level = notice.get("level", "info")
+        message = notice.get("message", "")
+        if level == "error":
+            st.error(message)
+        elif level == "warning":
+            st.warning(message)
+        else:
+            st.info(message)
+
+
+def _queue_runtime_diagnostics(diagnostics, source: str, context_label: str = "") -> None:
+    for diagnostic in diagnostics or []:
+        message = diagnostic.get("message", "")
+        if context_label:
+            message = f"{context_label}: {message}"
+        _queue_ui_notice(diagnostic.get("level", "info"), message, source=source)
+
+
+def _quality_gate_block_message(result: dict) -> str:
+    summary = result.get("summary", {})
+    errors = summary.get("error_count", 0)
+    warnings = summary.get("warning_count", 0)
+
+    issue_snippets = []
+    for chapter in result.get("chapters", []):
+        for issue in chapter.get("issues", []):
+            issue_snippets.append(f"{chapter.get('chapter_title', 'Untitled')}: {issue.get('message', '')}")
+            if len(issue_snippets) >= 2:
+                break
+        if len(issue_snippets) >= 2:
+            break
+
+    suffix = f" Top issue: {' | '.join(issue_snippets)}" if issue_snippets else ""
+    return (
+        f"Final assembly is blocked by the quality gate ({errors} error(s), {warnings} warning(s)). "
+        f"Review step 5 and fix or clean the blocking issues before exporting.{suffix}"
+    )
 
 
 def _format_update_window(metadata):
@@ -273,6 +349,7 @@ def render_report_metadata_editor(key_prefix: str):
 # --- Main Logic ---
 def main():
     st.title("Report Updater v3 (Horizon/Elisha)")
+    _render_ui_notices()
     
     if not os.environ.get("GEMINI_API_KEY"):
         ask_for_api_key()
@@ -319,6 +396,7 @@ def render_upload_extract():
             f.write(uploaded_file.getbuffer())
 
         if st.button("Process Document"):
+            _clear_ui_notices()
             if metadata_errors:
                 logger.warning("Blocked document processing due to invalid report metadata.")
                 return
@@ -360,18 +438,27 @@ def render_upload_extract():
                 ]
 
                 st.session_state.chapters = []
-                total_ch = len(results["chapters"])
                 status = st.empty()
                 progress = st.progress(0)
+                chapters_to_process = []
 
-                for i, ch in enumerate(results["chapters"]):
+                for ch in results["chapters"]:
                     if ch['title'].strip().lower() in toc_patterns:
                         logger.info(f"Skipping ToC chapter: '{ch['title']}'")
                         continue
 
                     ch['id'] = str(uuid.uuid4())
-                    status.text(f"Analyzing Chapter {i+1}/{total_ch}: {ch['title'][:30]}...")
-                    analysis = analyze_chapter_content(ch['title'], ch['content'])
+                    chapters_to_process.append(ch)
+
+                total_ch = len(chapters_to_process)
+                analysis_by_id = {}
+                if chapters_to_process:
+                    status.text(f"Analyzing {total_ch} chapter(s) with Gemini...")
+                    analysis_by_id = analyze_chapters_batch(chapters_to_process)
+
+                for i, ch in enumerate(chapters_to_process):
+                    status.text(f"Applying analysis {i+1}/{total_ch}: {ch['title'][:30]}...")
+                    analysis = analysis_by_id.get(ch['id'], {})
 
                     ch['original_full_text'] = ch['content']
                     ch['original_word_count'] = len(ch['content'].split())
@@ -390,7 +477,7 @@ def render_upload_extract():
                 st.session_state.current_state = STATE_ASSET_SELECTION
                 st.rerun()
 
-def render_asset_selection():
+def _render_asset_selection_legacy():
     st.header("2. Source Asset Selection")
     st.write("Review the images extracted from the report. Select those you want to include in the new version.")
     
@@ -479,6 +566,7 @@ def render_asset_selection():
                     st.rerun()
 
     if st.button("Confirm Selection", type="primary"):
+        _clear_ui_notices(source="vision")
         logger.info(f"User confirmed asset selection. Count: {len(st.session_state.selected_asset_ids)}")
         # Background: Analyze selected assets in batch
         with st.status("Analyzing selected assets with Gemini Vision...") as status:
@@ -489,9 +577,22 @@ def render_asset_selection():
                 logger.info(f"Triggering analyze_batch_assets for {len(selected_assets)} assets.")
                 v_start_time = time.time()
                 # Perform batch analysis
+                reset_vision_runtime_diagnostics()
                 analysis_results = analyze_batch_assets(selected_assets)
+                _queue_runtime_diagnostics(
+                    consume_vision_runtime_diagnostics(),
+                    source="vision",
+                    context_label="Source asset analysis",
+                )
                 v_latency = time.time() - v_start_time
                 logger.info(f"Vision analysis complete in {v_latency:.2f}s. Results count: {len(analysis_results)}")
+                unique_result_ids = {str(item.get("id", "")) for item in analysis_results if item.get("id")}
+                if unique_result_ids and len(unique_result_ids) != len(selected_assets):
+                    _queue_ui_notice(
+                        "warning",
+                        "Source asset analysis returned an unexpected number of results. Some captions or update suggestions may need a manual check.",
+                        source="vision",
+                    )
                 
                 # Map results back to assets
                 result_map = {r['id']: r for r in analysis_results}
@@ -529,6 +630,148 @@ def render_asset_selection():
                              chapter['original_full_text'] = chapter['original_full_text'].replace(marker, "")
                 
                 logger.info(f"Removed markers for {len(unselected_ids)} unselected assets from chapters.")
+
+        st.session_state.current_state = STATE_RESEARCH_PLANNING
+        logger.info("Transitioning to STATE_RESEARCH_PLANNING.")
+        st.rerun()
+
+def render_asset_selection():
+    st.header("2. Source Asset Selection")
+    st.write("Review the images extracted from the report. Select those you want to include in the new version.")
+
+    if not st.session_state.assets:
+        st.info("No images detected in the document.")
+        if st.button("Continue to Planning"):
+            st.session_state.current_state = STATE_RESEARCH_PLANNING
+            st.rerun()
+        return
+
+    asset_map = {a['id']: a for a in st.session_state.assets}
+    asset_to_chapters = build_asset_to_chapters(st.session_state.chapters)
+    initialize_asset_selection_state(
+        st.session_state.assets,
+        st.session_state.selected_asset_ids,
+        st.session_state,
+    )
+
+    assigned_asset_ids = set()
+    rendered_asset_ids = set()
+
+    with st.form("asset_selection_form"):
+        selected_count = len(selected_asset_ids_from_widget_state(st.session_state.assets, st.session_state))
+        st.caption(f"{selected_count} of {len(st.session_state.assets)} assets currently selected.")
+
+        for c_idx, chapter in enumerate(st.session_state.chapters):
+            asset_ids = chapter.get('asset_ids', [])
+            if asset_ids:
+                st.divider()
+                st.subheader(f"Chapter {c_idx+1}: {chapter['title']}")
+
+                cols = st.columns(3)
+                for a_idx, a_id in enumerate(asset_ids):
+                    if a_id not in asset_map:
+                        continue
+
+                    asset = asset_map[a_id]
+                    assigned_asset_ids.add(a_id)
+                    with cols[a_idx % 3]:
+                        st.image(asset["path"], caption=f"ID: {a_id[:8]}")
+
+                        other_chapters = [ch for ch in asset_to_chapters.get(a_id, []) if ch != f"Chapter {c_idx+1}"]
+                        if other_chapters:
+                            st.info(f"Also in: {', '.join(other_chapters)}")
+
+                        if a_id not in rendered_asset_ids:
+                            rendered_asset_ids.add(a_id)
+                            st.checkbox(
+                                f"Include {a_id[:8]}",
+                                key=asset_selection_widget_key(a_id),
+                            )
+                        else:
+                            st.caption("Shared asset. Selection is controlled by its first occurrence above.")
+
+        unassigned_ids = [a['id'] for a in st.session_state.assets if a['id'] not in assigned_asset_ids]
+        if unassigned_ids:
+            st.divider()
+            st.subheader("Unassigned Assets")
+            st.write("Images that couldn't be definitively linked to a specific chapter.")
+            cols = st.columns(3)
+            for u_idx, a_id in enumerate(unassigned_ids):
+                asset = asset_map[a_id]
+                with cols[u_idx % 3]:
+                    st.image(asset["path"], caption=f"ID: {a_id[:8]}")
+                    st.checkbox(
+                        f"Include {a_id[:8]}",
+                        key=asset_selection_widget_key(a_id),
+                    )
+
+        confirmed = st.form_submit_button("Confirm Selection", type="primary")
+
+    if confirmed:
+        st.session_state.selected_asset_ids = selected_asset_ids_from_widget_state(
+            st.session_state.assets,
+            st.session_state,
+        )
+        _clear_ui_notices(source="vision")
+        logger.info(f"User confirmed asset selection. Count: {len(st.session_state.selected_asset_ids)}")
+
+        with st.status("Analyzing selected assets with Gemini Vision...") as status:
+            selected_assets = [a for a in st.session_state.assets if a['id'] in st.session_state.selected_asset_ids]
+
+            if selected_assets:
+                status.update(label="Sending assets to Vision API (this may take a moment)...")
+                logger.info(f"Triggering analyze_batch_assets for {len(selected_assets)} assets.")
+                v_start_time = time.time()
+                reset_vision_runtime_diagnostics()
+                analysis_results = analyze_batch_assets(selected_assets)
+                _queue_runtime_diagnostics(
+                    consume_vision_runtime_diagnostics(),
+                    source="vision",
+                    context_label="Source asset analysis",
+                )
+                v_latency = time.time() - v_start_time
+                logger.info(f"Vision analysis complete in {v_latency:.2f}s. Results count: {len(analysis_results)}")
+                unique_result_ids = {str(item.get("id", "")) for item in analysis_results if item.get("id")}
+                if unique_result_ids and len(unique_result_ids) != len(selected_assets):
+                    _queue_ui_notice(
+                        "warning",
+                        "Source asset analysis returned an unexpected number of results. Some captions or update suggestions may need a manual check.",
+                        source="vision",
+                    )
+
+                result_map = {r['id']: r for r in analysis_results}
+
+                for asset in st.session_state.assets:
+                    if asset['id'] in result_map:
+                        res = result_map[asset['id']]
+                        asset['analysis'] = res
+                        asset['short_caption'] = res.get('short_caption', 'Image')
+                        asset['description'] = res.get('dataset_description', '')
+                        asset['type'] = res.get('type', 'image')
+                        asset['update_query'] = res.get('suggested_update_query')
+
+                        for chapter in st.session_state.chapters:
+                            if 'asset_ids' in chapter and asset['id'] in chapter['asset_ids']:
+                                marker = f"[Asset: {asset['id'][:8]}]"
+                                info_block = f"\n[Figure {asset['id'][:8]}: {asset['short_caption']}]\n"
+                                if marker in chapter['content']:
+                                    chapter['content'] = chapter['content'].replace(marker, info_block)
+                                elif f"Figure {asset['id'][:8]}" not in chapter['content']:
+                                    chapter['content'] += info_block
+
+                unselected_ids = [a['id'] for a in st.session_state.assets if a['id'] not in st.session_state.selected_asset_ids]
+                for chapter in st.session_state.chapters:
+                    for u_id in unselected_ids:
+                        marker = f"[Asset: {u_id[:8]}]"
+                        if marker in chapter['content']:
+                            chapter['content'] = chapter['content'].replace(marker, "")
+                        if 'original_full_text' in chapter and marker in chapter['original_full_text']:
+                            chapter['original_full_text'] = chapter['original_full_text'].replace(marker, "")
+
+                logger.info(f"Removed markers for {len(unselected_ids)} unselected assets from chapters.")
+            else:
+                status.update(label="No assets selected. Continuing to planning.")
+                logger.info("No assets selected in stage 2. Skipping Vision analysis.")
 
         st.session_state.current_state = STATE_RESEARCH_PLANNING
         logger.info("Transitioning to STATE_RESEARCH_PLANNING.")
@@ -576,16 +819,29 @@ def render_research_planning():
 
             st.divider()
 
+            default_blueprint = build_chapter_blueprint_defaults(
+                chapter,
+                report_metadata=report_metadata,
+                report_title=st.session_state.original_report_name or report_metadata.get("edition_title", ""),
+            )
+            fallback_keywords = chapter.get('extracted_keywords', chapter['title'].split())
             if 'blueprint' not in chapter:
-                default_keywords = chapter.get('extracted_keywords', chapter['title'].split())
                 chapter['blueprint'] = {
-                    "topic": chapter['title'],
+                    "topic": default_blueprint.get("topic") or chapter['title'],
                     "timeframe": _format_update_window(report_metadata),
-                    "keywords": default_keywords,
+                    "keywords": default_blueprint.get("keywords") or fallback_keywords,
                     "instructions": "",
+                    "report_subject": default_blueprint.get("report_subject", ""),
+                    "source_chapter_title": default_blueprint.get("source_chapter_title", chapter['title']),
                 }
 
             blueprint = chapter['blueprint']
+            if not str(blueprint.get('topic', '')).strip() or blueprint.get('topic') == chapter.get('title'):
+                blueprint['topic'] = default_blueprint.get("topic") or chapter['title']
+            if not blueprint.get('keywords'):
+                blueprint['keywords'] = default_blueprint.get("keywords") or fallback_keywords
+            blueprint['report_subject'] = default_blueprint.get("report_subject", blueprint.get("report_subject", ""))
+            blueprint['source_chapter_title'] = default_blueprint.get("source_chapter_title", chapter['title'])
             blueprint['topic'] = st.text_input("Deep Research Topic", value=blueprint.get('topic', chapter['title']), key=f"topic_{c_id}")
             blueprint['timeframe'] = st.text_input("Timeframe", value=blueprint.get('timeframe', _format_update_window(report_metadata)), key=f"time_{c_id}")
 
@@ -722,10 +978,17 @@ def render_research_planning():
         if metadata_errors:
             logger.warning("Blocked draft generation due to invalid report metadata.")
             return
+        _clear_ui_notices(source="research")
+        _clear_ui_notices(source="generation")
+        _clear_ui_notices(source="quality_gate")
         st.session_state.current_state = STATE_DRAFT_GENERATION
         st.rerun()
 
-from research_agent import perform_comprehensive_research
+from research_agent import (
+    consume_runtime_diagnostics as consume_research_runtime_diagnostics,
+    perform_comprehensive_research,
+    reset_runtime_diagnostics as reset_research_runtime_diagnostics,
+)
 from writer_agent import write_chapter
 from quality_gate import clean_fixable_issues, evaluate_report_quality, has_blocking_issues
 
@@ -735,6 +998,7 @@ def render_draft_generation():
     
     progress_bar = st.progress(0)
     status_text = st.empty()
+    generation_alert = st.empty()
     
     # Sort chapters by number before processing
     st.session_state.chapters.sort(key=lambda x: x.get('number', 0))
@@ -746,7 +1010,21 @@ def render_draft_generation():
             status_text.text(f"Processing Chapter {idx+1}/{total}: {chapter['title']}...")
             
             # 1. Main Topic Research
+            reset_research_runtime_diagnostics()
             findings = perform_comprehensive_research(chapter['blueprint'])
+            research_diagnostics = consume_research_runtime_diagnostics()
+            if research_diagnostics:
+                _queue_runtime_diagnostics(
+                    research_diagnostics,
+                    source="research",
+                    context_label=f"Research for '{chapter['title']}'",
+                )
+                latest = research_diagnostics[-1]
+                latest_message = f"{chapter['title']}: {latest.get('message', '')}"
+                if latest.get("level") == "error":
+                    generation_alert.error(latest_message)
+                else:
+                    generation_alert.warning(latest_message)
             
             # 2. Graph Update Research
             assets_to_update = []
@@ -762,6 +1040,7 @@ def render_draft_generation():
                             query = asset.get('update_query')
                             if query:
                                 status_text.text(f"Researching updated data for Figure {asset['id'][:8]}...")
+                                reset_research_runtime_diagnostics()
                                 graph_findings = perform_comprehensive_research({
                                     "topic": query,
                                     "keywords": [], # Query is specific enough
@@ -770,6 +1049,19 @@ def render_draft_generation():
                                     "update_start_date": chapter['blueprint'].get('update_start_date'),
                                     "update_end_date": chapter['blueprint'].get('update_end_date'),
                                 })
+                                graph_diagnostics = consume_research_runtime_diagnostics()
+                                if graph_diagnostics:
+                                    _queue_runtime_diagnostics(
+                                        graph_diagnostics,
+                                        source="research",
+                                        context_label=f"Visual research for figure {asset['id'][:8]}",
+                                    )
+                                    latest = graph_diagnostics[-1]
+                                    latest_message = f"Figure {asset['id'][:8]}: {latest.get('message', '')}"
+                                    if latest.get("level") == "error":
+                                        generation_alert.error(latest_message)
+                                    else:
+                                        generation_alert.warning(latest_message)
                                 # Tag these findings so the writer knows they are for the graph
                                 for gf in graph_findings:
                                     gf['title'] = f"[For Figure {asset['id'][:8]}] " + gf['title']
@@ -778,17 +1070,22 @@ def render_draft_generation():
 
             # 3. Write Chapter
             writing_style = chapter.get('writing_style', 'Professional')
+            prior_chapter_context = build_prior_chapter_context(st.session_state.chapters, idx)
             result = write_chapter(
                 chapter.get('original_full_text', chapter['content']), 
                 findings, 
                 chapter['blueprint'],
                 writing_style=writing_style,
                 assets_to_update=assets_to_update,
+                prior_chapter_context=prior_chapter_context,
                 target_word_count=chapter.get('target_word_count', 500),
                 temperature=chapter.get('temperature', 0.5)
             )
             
             if "error" in result:
+                error_message = f"Chapter {idx+1} ({chapter['title']}): {result['error']}"
+                _queue_ui_notice("error", error_message, source="generation")
+                generation_alert.error(error_message)
                 st.error(f"Error in Chapter {idx+1}: {result['error']}")
                 chapter['draft_text'] = "Error generating content."
             else:
@@ -854,6 +1151,7 @@ def render_draft_generation():
             
         progress_bar.progress((idx + 1) / total)
 
+    status_text.text("Draft generation complete. Review the notices above if anything degraded during research or writing.")
     st.success("All chapters processed!")
     if st.button("Review Drafts"):
         st.session_state.current_state = STATE_DRAFT_VERIFICATON
@@ -1056,10 +1354,12 @@ def render_draft_verification():
 
     action_col1, action_col2 = st.columns(2)
     if action_col1.button("Run Quality Gate"):
+        _clear_ui_notices(source="quality_gate")
         st.session_state.last_cleanup_result = None
         run_quality_gate()
         st.rerun()
     if action_col2.button("Clean Fixable Issues"):
+        _clear_ui_notices(source="quality_gate")
         st.session_state.last_cleanup_result = clean_fixable_issues(st.session_state.chapters)
         run_quality_gate()
         st.rerun()
@@ -1067,6 +1367,7 @@ def render_draft_verification():
     render_quality_gate_results(st.session_state.get("quality_gate_result"))
 
     if st.button("Finalize and Assemble Report", type="primary"):
+        _clear_ui_notices(source="quality_gate")
         # Build approved_visuals from checkbox state for each chapter
         for idx, chapter in enumerate(st.session_state.chapters):
             chapter['approved_visuals'] = []
@@ -1112,6 +1413,7 @@ def render_draft_verification():
         st.session_state.quality_gate_result = quality_report
         if has_blocking_issues(quality_report):
             logger.warning("Blocked final assembly due to quality gate errors.")
+            _queue_ui_notice("error", _quality_gate_block_message(quality_report), source="quality_gate")
             st.rerun()
 
         st.session_state.current_state = STATE_FINAL_ASSEMBLY
@@ -1223,11 +1525,21 @@ def render_final_assembly():
                     
                 status.update(label=f"Translating to {lang}...")
                 translated_chapters = []
-                for ch in st.session_state.chapters:
+                translated_bodies = translate_texts_batch(
+                    [ch['draft_text'] for ch in st.session_state.chapters],
+                    lang,
+                    preserve_markdown=True,
+                )
+                translated_titles = translate_texts_batch(
+                    [ch['title'] for ch in st.session_state.chapters],
+                    lang,
+                    preserve_markdown=False,
+                )
+
+                for ch, translated_body, translated_title in zip(st.session_state.chapters, translated_bodies, translated_titles):
                     # Deep copy the chapter and translate the text
                     new_ch = ch.copy()
-                    new_ch['draft_text'] = translate_content(ch['draft_text'], lang)
-                    translated_title = translate_content(ch['title'], lang)
+                    new_ch['draft_text'] = translated_body
                     # Strip any markdown separator fences (---) the translator may have wrapped around the title
                     translated_title = re.sub(r'^-{3,}\s*', '', translated_title.strip(), flags=re.MULTILINE).strip()
                     new_ch['title'] = translated_title

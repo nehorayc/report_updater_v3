@@ -192,7 +192,7 @@ def _resolve_output_language(report_metadata: Dict | None, report_title: str, ch
 def _language_pack(output_language: str) -> Dict[str, str]:
     if output_language == "Hebrew":
         return {
-            "cover_subtitle": "מהדורה מעודכנת שנחקרה והורכבה בעזרת סוכן AI",
+            "cover_subtitle": "מהדורה מעודכנת",
             "date_label": "תאריך",
             "table_of_contents": "תוכן עניינים",
             "executive_summary": "תקציר מנהלים",
@@ -212,7 +212,7 @@ def _language_pack(output_language: str) -> Dict[str, str]:
         }
 
     return {
-        "cover_subtitle": "Updated and Researched via AI Agent",
+        "cover_subtitle": "Updated Edition",
         "date_label": "Date",
         "table_of_contents": "Table of Contents",
         "executive_summary": "Executive Summary",
@@ -618,14 +618,14 @@ def build_final_report(chapters: List[Dict], output_path: str = "Modernized_Repo
     logger.info(f"Starting build_final_report for {len(chapters)} chapters. Title: '{report_title}'")
     normalized_chapters, ordered_refs = normalize_report_citations(chapters)
     sections = synthesize_report_sections(normalized_chapters, report_title, report_metadata)
+    include_front_matter = bool((report_metadata or {}).get("include_synthetic_front_matter"))
     builder = ReportBuilder(report_title)
     builder.add_cover_page(sections["cover_subtitle"], metadata_summary=sections["metadata_summary"], date_label=sections["date_label"])
     builder.add_table_of_contents(sections["titles"]["table_of_contents"])
-    builder.add_front_matter_section(sections["titles"]["executive_summary"], sections["executive_intro"], sections["executive_points"])
-    builder.add_front_matter_section(sections["titles"]["methodology"], sections["methodology_intro"], sections["methodology_points"])
-    builder.add_front_matter_section(sections["titles"]["key_developments"], bullets=sections["key_developments"])
-    updated_chapters_heading = builder.doc.add_heading(sections["titles"]["updated_chapters"], level=1)
-    builder._set_rtl_if_hebrew(updated_chapters_heading, sections["titles"]["updated_chapters"])
+    if include_front_matter:
+        builder.add_front_matter_section(sections["titles"]["executive_summary"], sections["executive_intro"], sections["executive_points"])
+        builder.add_front_matter_section(sections["titles"]["methodology"], sections["methodology_intro"], sections["methodology_points"])
+        builder.add_front_matter_section(sections["titles"]["key_developments"], bullets=sections["key_developments"])
 
     for ch in normalized_chapters:
         builder.add_chapter(ch['title'], ch['draft_text'], ch.get('approved_visuals', []))
@@ -639,6 +639,7 @@ def build_markdown_report(chapters: List[Dict], output_path: str = "Modernized_R
     logger.info(f"Starting build_markdown_report for {len(chapters)} chapters. Title: '{report_title}'")
     normalized_chapters, ordered_refs = normalize_report_citations(chapters)
     sections = synthesize_report_sections(normalized_chapters, report_title, report_metadata)
+    include_front_matter = bool((report_metadata or {}).get("include_synthetic_front_matter"))
 
     md_content = []
     
@@ -654,18 +655,18 @@ def build_markdown_report(chapters: List[Dict], output_path: str = "Modernized_R
     md_content.append(f"# {report_title}\n")
     md_content.append(f"_{sections['cover_subtitle']} | {sections['date_label']}: {datetime.now().strftime('%Y-%m-%d')}_\n\n")
     md_content.append(f"**{sections['metadata_summary']}**\n")
-    md_content.append(f"\n## {sections['titles']['executive_summary']}\n")
-    md_content.append(f"{sections['executive_intro']}\n")
-    for point in sections["executive_points"]:
-        md_content.append(f"- {point}")
-    md_content.append(f"\n## {sections['titles']['methodology']}\n")
-    md_content.append(f"{sections['methodology_intro']}\n")
-    for point in sections["methodology_points"]:
-        md_content.append(f"- {point}")
-    md_content.append(f"\n## {sections['titles']['key_developments']}\n")
-    for point in sections["key_developments"]:
-        md_content.append(f"- {point}")
-    md_content.append(f"\n## {sections['titles']['updated_chapters']}\n")
+    if include_front_matter:
+        md_content.append(f"\n## {sections['titles']['executive_summary']}\n")
+        md_content.append(f"{sections['executive_intro']}\n")
+        for point in sections["executive_points"]:
+            md_content.append(f"- {point}")
+        md_content.append(f"\n## {sections['titles']['methodology']}\n")
+        md_content.append(f"{sections['methodology_intro']}\n")
+        for point in sections["methodology_points"]:
+            md_content.append(f"- {point}")
+        md_content.append(f"\n## {sections['titles']['key_developments']}\n")
+        for point in sections["key_developments"]:
+            md_content.append(f"- {point}")
 
     for ch in normalized_chapters:
         md_content.append(f"# {ch['title']}\n")

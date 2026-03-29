@@ -1,8 +1,8 @@
-import google.generativeai as genai
 import os
 import json
 from dotenv import load_dotenv
 from typing import List, Dict
+from gemini_client import generate_content as gemini_generate_content
 
 load_dotenv()
 
@@ -10,6 +10,32 @@ from logger_config import setup_logger
 import time
 
 logger = setup_logger("VisionService")
+
+_RUNTIME_DIAGNOSTICS: List[Dict[str, str]] = []
+
+
+def reset_runtime_diagnostics() -> None:
+    _RUNTIME_DIAGNOSTICS.clear()
+
+
+def consume_runtime_diagnostics() -> List[Dict[str, str]]:
+    diagnostics = list(_RUNTIME_DIAGNOSTICS)
+    _RUNTIME_DIAGNOSTICS.clear()
+    return diagnostics
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    return any(token in message for token in ("429", "quota", "resource_exhausted", "rate limit"))
+
+
+def _record_runtime_diagnostic(level: str, message: str) -> None:
+    normalized = " ".join(str(message or "").split())
+    if not normalized:
+        return
+    diagnostic = {"level": level, "message": normalized}
+    if diagnostic not in _RUNTIME_DIAGNOSTICS:
+        _RUNTIME_DIAGNOSTICS.append(diagnostic)
 
 def analyze_batch_assets(assets: List[Dict]) -> List[Dict]:
     """
@@ -21,11 +47,11 @@ def analyze_batch_assets(assets: List[Dict]) -> List[Dict]:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         logger.error("GEMINI_API_KEY not found in environment.")
+        _record_runtime_diagnostic(
+            "error",
+            "Gemini API key is missing, so the selected assets could not be analyzed.",
+        )
         return []
-
-    genai.configure(api_key=api_key)
-    # Using gemini-2.5-flash for state-of-the-art speed and vision capabilities
-    model = genai.GenerativeModel('gemini-2.5-flash')
 
     results = []
     
@@ -62,12 +88,15 @@ def analyze_batch_assets(assets: List[Dict]) -> List[Dict]:
                 logger.error(f"Error loading image {asset['path']}: {e}")
                 
         # Use JSON mode for guaranteed valid JSON output
-        generation_config = {"response_mime_type": "application/json"}
-
         start_time = time.time()
         try:
             logger.debug(f"Sending request to Gemini for chunk {i//chunk_size + 1}...")
-            response = model.generate_content(prompt_parts, generation_config=generation_config)
+            response = gemini_generate_content(
+                api_key=api_key,
+                model='gemini-2.5-flash',
+                contents=prompt_parts,
+                response_mime_type="application/json",
+            )
             latency = time.time() - start_time
             logger.info(f"Gemini response received for chunk {i//chunk_size + 1} in {latency:.2f}s.")
             
@@ -85,6 +114,16 @@ def analyze_batch_assets(assets: List[Dict]) -> List[Dict]:
                  
         except Exception as e:
             logger.error(f"Error in batch analysis for chunk {i//chunk_size + 1}: {e}", exc_info=True)
+            if _is_quota_error(e):
+                _record_runtime_diagnostic(
+                    "warning",
+                    "Gemini quota was exhausted while analyzing selected assets. Captions and update suggestions may be incomplete for this run.",
+                )
+            else:
+                _record_runtime_diagnostic(
+                    "error",
+                    "Asset analysis failed for one or more selected visuals. Placeholder captions were used instead.",
+                )
             # Add placeholders for failed items
             for asset in chunk:
                 results.append({

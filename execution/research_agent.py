@@ -3,21 +3,30 @@ import os
 import re
 import requests
 import time
+from copy import deepcopy
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from logger_config import setup_logger
+from llm_json_utils import try_parse_json
+from gemini_client import generate_content as gemini_generate_content
 
 logger = setup_logger("ResearchAgent")
 
 _FETCH_TIMEOUT = 5
 _ARTICLE_MAX_CHARS = 2500
 _DDG_DELAY = 1.2
-_TRANSLATION_CACHE = {}
+_TRANSLATION_CACHE: Dict[str, str] = {}
 _REFERENCE_TEXT_CACHE: Dict[Tuple[str, float], str] = {}
+_ARTICLE_TEXT_CACHE: Dict[str, str] = {}
+_WEB_SEARCH_CACHE: Dict[Tuple[str, int, Optional[int], Optional[int]], List[Dict[str, Any]]] = {}
+_ACADEMIC_SEARCH_CACHE: Dict[Tuple[str, int, Optional[int], Optional[int]], List[Dict[str, Any]]] = {}
+_RESEARCH_RESULT_CACHE: Dict[Tuple[Any, ...], List[Dict[str, Any]]] = {}
 _GENERIC_TOPICS = {"introduction", "conclusion", "summary", "abstract", "foreword", "appendix"}
+_RUNTIME_DIAGNOSTICS: List[Dict[str, str]] = []
+_TRANSLATION_BATCH_MAX_ITEMS = 12
 _GENERIC_WEB_PATH_TERMS = {
     "topic", "topics", "tag", "tags", "category", "categories", "archive", "archives",
     "all-posts", "latest-news", "top-stories", "news", "posts",
@@ -28,8 +37,36 @@ _GENERIC_WEB_TITLE_PATTERN = re.compile(
 )
 
 
+def reset_runtime_diagnostics() -> None:
+    _RUNTIME_DIAGNOSTICS.clear()
+
+
+def consume_runtime_diagnostics() -> List[Dict[str, str]]:
+    diagnostics = list(_RUNTIME_DIAGNOSTICS)
+    _RUNTIME_DIAGNOSTICS.clear()
+    return diagnostics
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    return any(token in message for token in ("429", "quota", "resource_exhausted", "rate limit"))
+
+
+def _record_runtime_diagnostic(level: str, message: str) -> None:
+    normalized = re.sub(r"\s+", " ", str(message or "")).strip()
+    if not normalized:
+        return
+    diagnostic = {"level": level, "message": normalized}
+    if diagnostic not in _RUNTIME_DIAGNOSTICS:
+        _RUNTIME_DIAGNOSTICS.append(diagnostic)
+
+
 def _is_hebrew(text: str) -> bool:
     return bool(re.search(r'[\u0590-\u05FF]', text or ""))
+
+
+def _clone_findings(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return deepcopy(findings)
 
 
 def _translate_to_english(text: str) -> str:
@@ -38,16 +75,15 @@ def _translate_to_english(text: str) -> str:
     if text in _TRANSLATION_CACHE:
         return _TRANSLATION_CACHE[text]
     try:
-        import google.generativeai as genai
         from dotenv import load_dotenv
         load_dotenv()
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             return text
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        response = model.generate_content(
-            f"Translate the following text to English. Return ONLY the translation, no explanations:\n\n{text}"
+        response = gemini_generate_content(
+            api_key=api_key,
+            model='gemini-2.0-flash',
+            contents=f"Translate the following text to English. Return ONLY the translation, no explanations:\n\n{text}",
         )
         translated = response.text.strip()
         _TRANSLATION_CACHE[text] = translated
@@ -55,7 +91,116 @@ def _translate_to_english(text: str) -> str:
         return translated
     except Exception as e:
         logger.warning(f"Translation failed for '{text[:40]}': {e}")
+        if _is_quota_error(e):
+            _record_runtime_diagnostic(
+                "warning",
+                "Gemini quota was exhausted while translating research terms. The app continued with the original wording, so search coverage may be weaker until the quota resets.",
+            )
         return text
+
+
+def _chunk_items(items: List[str], chunk_size: int) -> List[List[str]]:
+    if chunk_size <= 0:
+        return [items]
+    return [items[index:index + chunk_size] for index in range(0, len(items), chunk_size)]
+
+
+def _extract_translation_map(parsed: Any) -> Dict[str, str]:
+    if isinstance(parsed, dict):
+        items = parsed.get("translations")
+        if isinstance(items, list):
+            parsed = items
+    if not isinstance(parsed, list):
+        return {}
+
+    translated: Dict[str, str] = {}
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source", "")).strip()
+        translation = str(item.get("translation", "")).strip()
+        if source and translation:
+            translated[source] = translation
+    return translated
+
+
+def _translate_terms_to_english(texts: List[str]) -> Dict[str, str]:
+    translations: Dict[str, str] = {}
+    pending: List[str] = []
+    seen = set()
+
+    for text in texts:
+        normalized = str(text or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        if not _is_hebrew(normalized):
+            translations[normalized] = normalized
+        elif normalized in _TRANSLATION_CACHE:
+            translations[normalized] = _TRANSLATION_CACHE[normalized]
+        else:
+            pending.append(normalized)
+
+    if not pending:
+        return translations
+
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            for text in pending:
+                translations[text] = text
+            return translations
+
+        for chunk in _chunk_items(pending, _TRANSLATION_BATCH_MAX_ITEMS):
+            prompt = f"""
+Translate each Hebrew term below to concise natural English.
+Return ONLY valid JSON in this format:
+{{
+  "translations": [
+    {{"source": "original text", "translation": "english translation"}}
+  ]
+}}
+
+Preserve meaning faithfully. Do not add commentary.
+
+TERMS:
+{chr(10).join(f"- {item}" for item in chunk)}
+"""
+
+            try:
+                response = gemini_generate_content(
+                    api_key=api_key,
+                    model='gemini-2.0-flash',
+                    contents=prompt,
+                    response_mime_type="application/json",
+                )
+                parsed = try_parse_json(response.text.strip())
+                mapped = _extract_translation_map(parsed)
+            except Exception as exc:
+                logger.warning("Batched term translation failed: %s", exc)
+                mapped = {}
+                if _is_quota_error(exc):
+                    _record_runtime_diagnostic(
+                        "warning",
+                        "Gemini quota was exhausted while translating research terms. The app continued with the original wording, so search coverage may be weaker until the quota resets.",
+                    )
+
+            for source in chunk:
+                translated = mapped.get(source)
+                if translated:
+                    _TRANSLATION_CACHE[source] = translated
+                    translations[source] = translated
+                else:
+                    translations[source] = _translate_to_english(source)
+
+    except Exception as exc:
+        logger.warning("Unable to initialize batched term translation: %s", exc)
+        for text in pending:
+            translations[text] = _translate_to_english(text)
+
+    return translations
 
 
 def _extract_year(value: Optional[str]) -> Optional[int]:
@@ -264,14 +409,11 @@ def _split_reference_paragraphs(text: str) -> List[str]:
 def _gemini_research_fallback(topic: str, keywords: List[str], start_year: Optional[int], end_year: Optional[int]) -> List[Dict]:
     logger.info(f"DDG yielded 0 results - using Gemini research fallback for: '{topic}'")
     try:
-        import google.generativeai as genai
         from dotenv import load_dotenv
         load_dotenv()
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             return []
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-2.5-flash')
 
         kw_str = ", ".join(keywords[:6]) if keywords else topic
         year_window = f"{start_year}-{end_year}" if start_year and end_year else "the requested update window"
@@ -286,7 +428,11 @@ For each finding, provide:
 Format as a numbered list. Be specific. Include real numbers, percentages, organizations, and years when possible.
 """
 
-        response = model.generate_content(prompt)
+        response = gemini_generate_content(
+            api_key=api_key,
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
         raw = response.text.strip()
 
         findings = []
@@ -311,10 +457,17 @@ Format as a numbered list. Be specific. Include real numbers, percentages, organ
         return findings[:5]
     except Exception as e:
         logger.error(f"Gemini research fallback failed: {e}", exc_info=True)
+        if _is_quota_error(e):
+            _record_runtime_diagnostic(
+                "warning",
+                "Gemini quota was exhausted during fallback research. No fallback findings were added for this chapter.",
+            )
         return []
 
 
 def _fetch_article_text(url: str) -> str:
+    if url in _ARTICLE_TEXT_CACHE:
+        return _ARTICLE_TEXT_CACHE[url]
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -323,12 +476,20 @@ def _fetch_article_text(url: str) -> str:
         resp.raise_for_status()
         text = re.sub(r'<[^>]+>', ' ', resp.text)
         text = re.sub(r'\s+', ' ', text).strip()
-        return text[:_ARTICLE_MAX_CHARS]
+        article = text[:_ARTICLE_MAX_CHARS]
+        _ARTICLE_TEXT_CACHE[url] = article
+        return article
     except Exception:
+        _ARTICLE_TEXT_CACHE[url] = ""
         return ""
 
 
 def search_web(query: str, max_results: int = 5, start_year: Optional[int] = None, end_year: Optional[int] = None) -> List[Dict[str, str]]:
+    cache_key = (str(query or "").strip().lower(), max_results, start_year, end_year)
+    if cache_key in _WEB_SEARCH_CACHE:
+        logger.info("Returning cached web search for: '%s'", query)
+        return _clone_findings(_WEB_SEARCH_CACHE[cache_key])
+
     logger.info(f"Performing web search for: '{query}' (max_results={max_results})")
     raw_results = []
     start_time = time.time()
@@ -370,7 +531,8 @@ def search_web(query: str, max_results: int = 5, start_year: Optional[int] = Non
         results.append(item)
 
     logger.info(f"Web search+fetch complete. Total time: {time.time() - start_time:.2f}s.")
-    return results
+    _WEB_SEARCH_CACHE[cache_key] = _clone_findings(results)
+    return _clone_findings(results)
 
 
 def _openalex_abstract(work: Dict) -> str:
@@ -386,6 +548,11 @@ def _openalex_abstract(work: Dict) -> str:
 
 
 def search_academic(query: str, max_results: int = 3, start_year: Optional[int] = None, end_year: Optional[int] = None) -> List[Dict[str, str]]:
+    cache_key = (str(query or "").strip().lower(), max_results, start_year, end_year)
+    if cache_key in _ACADEMIC_SEARCH_CACHE:
+        logger.info("Returning cached academic search for: '%s'", query)
+        return _clone_findings(_ACADEMIC_SEARCH_CACHE[cache_key])
+
     logger.info(f"Performing academic search for: '{query}'")
     params = {
         "search": query,
@@ -416,7 +583,8 @@ def search_academic(query: str, max_results: int = 3, start_year: Optional[int] 
             "source": "academic",
             "published_date": str(publication_year) if publication_year else None,
         })
-    return findings
+    _ACADEMIC_SEARCH_CACHE[cache_key] = _clone_findings(findings)
+    return _clone_findings(findings)
 
 
 def search_internal(query: str, reference_docs: List[str]) -> List[Dict[str, str]]:
@@ -491,11 +659,40 @@ def _build_queries(topic: str, keywords: List[str], blueprint: Dict) -> List[str
     return final_queries
 
 
+def _reference_cache_key(reference_docs: List[str]) -> Tuple[Tuple[str, float], ...]:
+    entries = []
+    for doc_path in reference_docs or []:
+        if not os.path.exists(doc_path):
+            continue
+        entries.append((doc_path, os.path.getmtime(doc_path)))
+    return tuple(sorted(entries))
+
+
+def _build_research_cache_key(blueprint: Dict, window: Dict[str, Optional[int]]) -> Tuple[Any, ...]:
+    topic = str(blueprint.get("topic", "")).strip().lower()
+    keywords = tuple(
+        sorted(str(keyword).strip().lower() for keyword in blueprint.get("keywords", []) if str(keyword).strip())
+    )
+    return (
+        topic,
+        keywords,
+        window.get("original_year"),
+        window.get("start_year"),
+        window.get("end_year"),
+        _reference_cache_key(blueprint.get("ref_paths", [])),
+    )
+
+
 def perform_comprehensive_research(blueprint: Dict) -> List[Dict]:
     topic = blueprint.get("topic", "")
     keywords = blueprint.get("keywords", [])
     ref_paths = blueprint.get("ref_paths", [])
     window = _infer_time_window(blueprint)
+    research_cache_key = _build_research_cache_key(blueprint, window)
+
+    if research_cache_key in _RESEARCH_RESULT_CACHE:
+        logger.info("Returning cached comprehensive research for topic: '%s'", topic)
+        return _clone_findings(_RESEARCH_RESULT_CACHE[research_cache_key])
 
     logger.info(f"Orchestrating comprehensive research for topic: '{topic}'")
     all_findings: List[Dict] = []
@@ -505,8 +702,9 @@ def perform_comprehensive_research(blueprint: Dict) -> List[Dict]:
         for query in internal_queries:
             all_findings.extend(search_internal(query, ref_paths))
 
-    en_topic = _translate_to_english(topic)
-    en_keywords = [_translate_to_english(keyword) for keyword in keywords]
+    translated_terms = _translate_terms_to_english([topic, *keywords])
+    en_topic = translated_terms.get(str(topic).strip(), topic)
+    en_keywords = [translated_terms.get(str(keyword).strip(), keyword) for keyword in keywords]
 
     final_queries = _build_queries(en_topic, en_keywords, blueprint)
     if not final_queries and en_topic:
@@ -565,7 +763,9 @@ def perform_comprehensive_research(blueprint: Dict) -> List[Dict]:
         reverse=True,
     )
 
-    return deduped[:15]
+    trimmed = deduped[:15]
+    _RESEARCH_RESULT_CACHE[research_cache_key] = _clone_findings(trimmed)
+    return _clone_findings(trimmed)
 
 
 if __name__ == "__main__":
