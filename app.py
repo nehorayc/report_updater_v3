@@ -61,10 +61,31 @@ from report_context import build_chapter_blueprint_defaults, build_prior_chapter
 # State Machine Constants
 STATE_UPLOAD_EXTRACT = "UPLOAD_AND_EXTRACT"
 STATE_ASSET_SELECTION = "ASSET_SELECTION"
+STATE_SOURCE_VISUAL_PLANNING = "SOURCE_VISUAL_PLANNING"
 STATE_RESEARCH_PLANNING = "RESEARCH_PLANNING"
 STATE_DRAFT_GENERATION = "DRAFT_GENERATION"
 STATE_DRAFT_VERIFICATON = "DRAFT_VERIFICATION"
 STATE_FINAL_ASSEMBLY = "FINAL_ASSEMBLY"
+
+STATE_SEQUENCE = [
+    STATE_UPLOAD_EXTRACT,
+    STATE_ASSET_SELECTION,
+    STATE_SOURCE_VISUAL_PLANNING,
+    STATE_RESEARCH_PLANNING,
+    STATE_DRAFT_GENERATION,
+    STATE_DRAFT_VERIFICATON,
+    STATE_FINAL_ASSEMBLY,
+]
+
+STATE_DISPLAY_NAMES = {
+    STATE_UPLOAD_EXTRACT: "1. Upload Source Report",
+    STATE_ASSET_SELECTION: "2. Keep Source Visuals",
+    STATE_SOURCE_VISUAL_PLANNING: "3. Plan Source Visual Updates",
+    STATE_RESEARCH_PLANNING: "4. Research Planning",
+    STATE_DRAFT_GENERATION: "5. Draft Generation",
+    STATE_DRAFT_VERIFICATON: "6. Draft Review & Visual Approval",
+    STATE_FINAL_ASSEMBLY: "7. Final Assembly",
+}
 
 # Initialize Session State
 if "current_state" not in st.session_state:
@@ -116,7 +137,9 @@ if "ui_notices" not in st.session_state:
 
 # --- Sidebar ---
 st.sidebar.title("Navigation")
-st.sidebar.info(f"Current State: {st.session_state.current_state}")
+st.sidebar.info(
+    f"Current Step: {STATE_DISPLAY_NAMES.get(st.session_state.current_state, st.session_state.current_state)}"
+)
 if st.session_state.debug_mode:
     st.sidebar.divider()
     st.sidebar.subheader("Debug Controls")
@@ -128,14 +151,8 @@ if st.session_state.debug_mode:
     # State Jumper
     state_selection = st.sidebar.selectbox(
         "Jump to State",
-        [
-            STATE_UPLOAD_EXTRACT,
-            STATE_ASSET_SELECTION,
-            STATE_RESEARCH_PLANNING,
-            STATE_DRAFT_GENERATION,
-            STATE_DRAFT_VERIFICATON,
-            STATE_FINAL_ASSEMBLY
-        ]
+        STATE_SEQUENCE,
+        format_func=lambda state: STATE_DISPLAY_NAMES.get(state, state),
     )
     if st.sidebar.button("Jump"):
         st.session_state.current_state = state_selection
@@ -255,12 +272,58 @@ def _quality_gate_block_message(result: dict) -> str:
     suffix = f" Top issue: {' | '.join(issue_snippets)}" if issue_snippets else ""
     return (
         f"Final assembly is blocked by the quality gate ({errors} error(s), {warnings} warning(s)). "
-        f"Review step 5 and fix or clean the blocking issues before exporting.{suffix}"
+        f"Review step 6 and fix or clean the blocking issues before exporting.{suffix}"
     )
 
 
 def _format_update_window(metadata):
     return f"{metadata['update_start_date'].isoformat()} to {metadata['update_end_date'].isoformat()}"
+
+
+def _selected_asset_id_set():
+    return {str(asset_id) for asset_id in st.session_state.get("selected_asset_ids", [])}
+
+
+def _selected_source_assets():
+    selected_ids = _selected_asset_id_set()
+    return [asset for asset in st.session_state.get("assets", []) if str(asset.get("id")) in selected_ids]
+
+
+def _selected_assets_for_chapter(chapter):
+    selected_ids = _selected_asset_id_set()
+    chapter_asset_ids = {str(asset_id) for asset_id in chapter.get("asset_ids", []) or []}
+    return [
+        asset
+        for asset in st.session_state.get("assets", [])
+        if str(asset.get("id")) in selected_ids and str(asset.get("id")) in chapter_asset_ids
+    ]
+
+
+def _selected_updateable_assets():
+    return [
+        asset
+        for asset in _selected_source_assets()
+        if str(asset.get("type", "")).lower() in {"chart", "table"}
+    ]
+
+
+def _default_asset_update_query(asset, report_metadata):
+    fallback_year = report_metadata["update_end_date"].year
+    if asset.get("update_query"):
+        return asset["update_query"]
+    if str(asset.get("type", "")).lower() == "table":
+        return f"{asset.get('short_caption') or 'table'} data {fallback_year}"
+    return f"{asset.get('short_caption') or 'chart'} statistics {fallback_year}"
+
+
+def _current_visual_plan_mode(asset):
+    if str(asset.get("type", "")).lower() == "table":
+        if asset.get("convert_to_text"):
+            return "Convert to editable table"
+        if asset.get("do_update"):
+            return "Refresh with updated data"
+        return "Keep original"
+    return "Refresh with updated data" if asset.get("do_update") else "Keep original"
 
 
 def _validate_report_metadata(metadata):
@@ -349,6 +412,10 @@ def render_report_metadata_editor(key_prefix: str):
 # --- Main Logic ---
 def main():
     st.title("Report Updater v3 (Horizon/Elisha)")
+    st.caption(
+        "Workflow: Upload source report -> Keep source visuals -> Plan source visual updates -> "
+        "Research planning -> Draft generation -> Review and approve visuals -> Final export"
+    )
     _render_ui_notices()
     
     if not os.environ.get("GEMINI_API_KEY"):
@@ -362,6 +429,8 @@ def main():
         render_upload_extract()
     elif current_state == STATE_ASSET_SELECTION:
         render_asset_selection()
+    elif current_state == STATE_SOURCE_VISUAL_PLANNING:
+        render_source_visual_planning()
     elif current_state == STATE_RESEARCH_PLANNING:
         render_research_planning()
     elif current_state == STATE_DRAFT_GENERATION:
@@ -378,8 +447,8 @@ def main():
 
 
 def render_upload_extract():
-    st.header("1. Upload & Blind Extraction")
-    st.write("Upload a source PDF or DOCX to begin.")
+    st.header("1. Upload Source Report")
+    st.write("Upload a source PDF or DOCX. We will extract chapters, visuals, and baseline metadata after you confirm.")
 
     uploaded_file = st.file_uploader("Source Document", type=["pdf", "docx"])
 
@@ -395,13 +464,13 @@ def render_upload_extract():
         with open(temp_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
 
-        if st.button("Process Document"):
+        if st.button("Extract Chapters & Visuals", type="primary"):
             _clear_ui_notices()
             if metadata_errors:
                 logger.warning("Blocked document processing due to invalid report metadata.")
                 return
 
-            logger.info(f"User clicked 'Process Document' for file: {uploaded_file.name}")
+            logger.info(f"User clicked 'Extract Chapters & Visuals' for file: {uploaded_file.name}")
             with st.spinner("Extracting text and media..."):
                 if uploaded_file.name.endswith(".pdf"):
                     results = extract_pdf_content(temp_path)
@@ -636,13 +705,13 @@ def _render_asset_selection_legacy():
         st.rerun()
 
 def render_asset_selection():
-    st.header("2. Source Asset Selection")
-    st.write("Review the images extracted from the report. Select those you want to include in the new version.")
+    st.header("2. Keep Source Visuals")
+    st.write("Choose which original images, charts, and tables should stay available in the updated report.")
 
     if not st.session_state.assets:
-        st.info("No images detected in the document.")
-        if st.button("Continue to Planning"):
-            st.session_state.current_state = STATE_RESEARCH_PLANNING
+        st.info("No source visuals were detected in the document.")
+        if st.button("Continue to Source Visual Planning"):
+            st.session_state.current_state = STATE_SOURCE_VISUAL_PLANNING
             st.rerun()
         return
 
@@ -659,7 +728,7 @@ def render_asset_selection():
 
     with st.form("asset_selection_form"):
         selected_count = len(selected_asset_ids_from_widget_state(st.session_state.assets, st.session_state))
-        st.caption(f"{selected_count} of {len(st.session_state.assets)} assets currently selected.")
+        st.caption(f"{selected_count} of {len(st.session_state.assets)} source visuals currently selected.")
 
         for c_idx, chapter in enumerate(st.session_state.chapters):
             asset_ids = chapter.get('asset_ids', [])
@@ -694,7 +763,7 @@ def render_asset_selection():
         if unassigned_ids:
             st.divider()
             st.subheader("Unassigned Assets")
-            st.write("Images that couldn't be definitively linked to a specific chapter.")
+            st.write("Source visuals that could not be definitively linked to a specific chapter.")
             cols = st.columns(3)
             for u_idx, a_id in enumerate(unassigned_ids):
                 asset = asset_map[a_id]
@@ -705,13 +774,18 @@ def render_asset_selection():
                         key=asset_selection_widget_key(a_id),
                     )
 
-        confirmed = st.form_submit_button("Confirm Selection", type="primary")
+        confirmed = st.form_submit_button("Save Source Visual Selection", type="primary")
 
     if confirmed:
         st.session_state.selected_asset_ids = selected_asset_ids_from_widget_state(
             st.session_state.assets,
             st.session_state,
         )
+        selected_id_set = _selected_asset_id_set()
+        for asset in st.session_state.assets:
+            if str(asset.get("id")) not in selected_id_set:
+                asset["do_update"] = False
+                asset["convert_to_text"] = False
         _clear_ui_notices(source="vision")
         logger.info(f"User confirmed asset selection. Count: {len(st.session_state.selected_asset_ids)}")
 
@@ -770,17 +844,137 @@ def render_asset_selection():
 
                 logger.info(f"Removed markers for {len(unselected_ids)} unselected assets from chapters.")
             else:
-                status.update(label="No assets selected. Continuing to planning.")
+                status.update(label="No source visuals selected. Continuing to the next step.")
                 logger.info("No assets selected in stage 2. Skipping Vision analysis.")
 
+        st.session_state.current_state = STATE_SOURCE_VISUAL_PLANNING
+        logger.info("Transitioning to STATE_SOURCE_VISUAL_PLANNING.")
+        st.rerun()
+
+
+def render_source_visual_planning():
+    st.header("3. Plan Source Visual Updates")
+    st.write(
+        "Decide which retained source charts and tables should stay as-is, be refreshed with newer data, "
+        "or be converted into editable text before drafting begins."
+    )
+
+    report_metadata = _get_report_metadata()
+    selected_assets = _selected_source_assets()
+    updateable_assets = _selected_updateable_assets()
+    updateable_asset_ids = {str(asset.get("id")) for asset in updateable_assets}
+    asset_to_chapters = build_asset_to_chapters(st.session_state.chapters)
+
+    for asset in selected_assets:
+        if str(asset.get("id")) not in updateable_asset_ids:
+            asset["do_update"] = False
+            asset["convert_to_text"] = False
+
+    chart_count = sum(1 for asset in updateable_assets if str(asset.get("type", "")).lower() == "chart")
+    table_count = sum(1 for asset in updateable_assets if str(asset.get("type", "")).lower() == "table")
+    planned_count = sum(
+        1 for asset in updateable_assets if asset.get("do_update") or asset.get("convert_to_text")
+    )
+
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Retained Visuals", len(selected_assets))
+    metric_cols[1].metric("Charts", chart_count)
+    metric_cols[2].metric("Tables", table_count)
+    metric_cols[3].metric("Planned Updates", planned_count)
+
+    st.info(
+        "This step only covers original charts and tables from the uploaded report. "
+        "New AI-suggested visuals are still approved after drafting."
+    )
+    st.caption(
+        f"Current update window: {report_metadata['update_start_date'].isoformat()} to "
+        f"{report_metadata['update_end_date'].isoformat()}."
+    )
+
+    if not updateable_assets:
+        st.success("No retained charts or tables need a special update plan.")
+        st.write(
+            "You can move straight into chapter research planning. Any selected source visuals will still "
+            "be available later for final retention."
+        )
+    else:
+        for asset in updateable_assets:
+            asset_type = str(asset.get("type", "visual")).lower()
+            chapter_labels = asset_to_chapters.get(asset["id"], [])
+            if not chapter_labels:
+                chapter_labels = ["Unassigned"]
+            asset_label = asset.get("short_caption") or f"Figure {str(asset['id'])[:8]}"
+
+            with st.container(border=True):
+                preview_col, details_col = st.columns([1, 2])
+                with preview_col:
+                    st.image(asset["path"], width="stretch")
+                with details_col:
+                    st.markdown(f"#### {asset_type.title()}: {asset_label}")
+                    st.caption(f"Figure {asset['id'][:8]} | Appears in: {', '.join(chapter_labels)}")
+                    if asset.get("description"):
+                        st.caption(asset["description"])
+
+                    if asset_type == "table":
+                        table_options = [
+                            "Keep original",
+                            "Refresh with updated data",
+                            "Convert to editable table",
+                        ]
+                        selection = st.radio(
+                            "How should this table be handled?",
+                            table_options,
+                            index=table_options.index(_current_visual_plan_mode(asset)),
+                            key=f"source_visual_strategy_{asset['id']}",
+                            horizontal=True,
+                        )
+                        asset["do_update"] = selection == "Refresh with updated data"
+                        asset["convert_to_text"] = selection == "Convert to editable table"
+                        if asset["do_update"]:
+                            asset["update_query"] = st.text_input(
+                                "Research Query",
+                                value=_default_asset_update_query(asset, report_metadata),
+                                key=f"source_visual_query_{asset['id']}",
+                            )
+                            st.caption("The drafting step will research fresh data and rebuild this table.")
+                        elif asset["convert_to_text"]:
+                            table_markdown = (asset.get("analysis") or {}).get("table_markdown")
+                            if table_markdown:
+                                with st.expander("Preview extracted table text"):
+                                    st.code(table_markdown, language="markdown")
+                            else:
+                                st.warning("No table transcription is available for this source table yet.")
+                    else:
+                        chart_options = ["Keep original", "Refresh with updated data"]
+                        selection = st.radio(
+                            "How should this chart be handled?",
+                            chart_options,
+                            index=chart_options.index(_current_visual_plan_mode(asset)),
+                            key=f"source_visual_strategy_{asset['id']}",
+                            horizontal=True,
+                        )
+                        asset["do_update"] = selection == "Refresh with updated data"
+                        asset["convert_to_text"] = False
+                        if asset["do_update"]:
+                            asset["update_query"] = st.text_input(
+                                "Research Query",
+                                value=_default_asset_update_query(asset, report_metadata),
+                                key=f"source_visual_query_{asset['id']}",
+                            )
+                            st.caption("The drafting step will research fresh data and recreate this chart.")
+
+    nav_col1, nav_col2 = st.columns(2)
+    if nav_col1.button("Back to Source Visual Selection"):
+        st.session_state.current_state = STATE_ASSET_SELECTION
+        st.rerun()
+    if nav_col2.button("Continue to Research Planning", type="primary"):
         st.session_state.current_state = STATE_RESEARCH_PLANNING
-        logger.info("Transitioning to STATE_RESEARCH_PLANNING.")
         st.rerun()
 
 
 def render_research_planning():
-    st.header("3. Research Planning")
-    st.write("Define the research blueprint and refine contents for each chapter.")
+    st.header("4. Research Planning")
+    st.write("Define the research blueprint, chapter scope, and writing guidance for each chapter.")
 
     report_metadata = render_report_metadata_editor("planning")
     metadata_errors = _validate_report_metadata(report_metadata)
@@ -790,6 +984,7 @@ def render_research_planning():
         f"Updating from {report_metadata['update_start_date'].isoformat()} to {report_metadata['update_end_date'].isoformat()} "
         f"based on an original report dated {report_metadata['original_report_date'].isoformat()}."
     )
+    st.info("Source chart and table update choices are handled in the previous step so this screen can stay focused on research planning.")
 
     to_remove = None
 
@@ -877,44 +1072,6 @@ def render_research_planning():
             with col4:
                 chapter['temperature'] = st.slider("Creativity (Similarity)", min_value=0.0, max_value=1.0, step=0.1, value=chapter.get('temperature', 0.5), help="0.0 = Keeps phrasing very similar to original, 1.0 = Highly creative rewrite", key=f"temp_{c_id}")
 
-            if 'asset_ids' in chapter:
-                assets_in_chapter = [a for a in st.session_state.assets if a['id'] in chapter['asset_ids']]
-                charts = [a for a in assets_in_chapter if a.get('type') == 'chart']
-                if charts:
-                    st.markdown("##### 📊 Graph Updates")
-                    for chart in charts:
-                        with st.container(border=True):
-                            c_col1, c_col2 = st.columns([1, 3])
-                            with c_col1:
-                                st.image(chart['path'], width=100)
-                            with c_col2:
-                                st.caption(f"**Fig {chart['id'][:8]}**: {chart.get('short_caption', '')}")
-                                do_update = st.checkbox("🔄 Recreate with updated data (2010-Present)", value=chart.get('do_update', False), key=f"update_{chart['id']}")
-                                chart['do_update'] = do_update
-                                if do_update:
-                                    def_query = chart.get('update_query') or f"{chart.get('short_caption')} statistics {report_metadata['update_end_date'].year}"
-                                    chart['update_query'] = st.text_input("Search Query", value=def_query, key=f"query_{chart['id']}")
-
-                tables = [a for a in assets_in_chapter if a.get('type') == 'table']
-                if tables:
-                    st.markdown("##### 📋 Table Updates")
-                    for table in tables:
-                        with st.container(border=True):
-                            t_col1, t_col2 = st.columns([1, 3])
-                            with t_col1:
-                                st.image(table['path'], width=100)
-                            with t_col2:
-                                st.caption(f"**Fig {table['id'][:8]}**: {table.get('short_caption', '')}")
-                                conv_key = f"conv_{table['id']}"
-                                st.checkbox("📄 Convert to editable Markdown table", value=table.get('convert_to_text', False), key=conv_key)
-                                table['convert_to_text'] = st.session_state[conv_key]
-                                upd_key = f"upd_table_{table['id']}"
-                                st.checkbox("🔄 Recreate with updated data", value=table.get('do_update', False), key=upd_key)
-                                table['do_update'] = st.session_state[upd_key]
-                                if table['do_update']:
-                                    def_query = table.get('update_query') or f"{table.get('short_caption')} data {report_metadata['update_end_date'].year}"
-                                    table['update_query'] = st.text_input("Search Query", value=def_query, key=f"query_tbl_{table['id']}")
-
             uploaded_refs = st.file_uploader(f"Reference Docs for Chapter {idx+1}", type=["pdf", "docx", "txt"], accept_multiple_files=True, key=f"ref_{c_id}")
             if uploaded_refs:
                 os.makedirs(".tmp", exist_ok=True)
@@ -974,7 +1131,12 @@ def render_research_planning():
         })
         st.rerun()
 
-    if st.button("Start Research & Drafting"):
+    action_col1, action_col2 = st.columns(2)
+    if action_col1.button("Back to Source Visual Updates"):
+        st.session_state.current_state = STATE_SOURCE_VISUAL_PLANNING
+        st.rerun()
+
+    if action_col2.button("Start Research & Drafting", type="primary"):
         if metadata_errors:
             logger.warning("Blocked draft generation due to invalid report metadata.")
             return
@@ -993,7 +1155,7 @@ from writer_agent import write_chapter
 from quality_gate import clean_fixable_issues, evaluate_report_quality, has_blocking_issues
 
 def render_draft_generation():
-    st.header("4. Draft Generation")
+    st.header("5. Draft Generation")
     st.write("The AI is now researching and rewriting your report...")
     
     progress_bar = st.progress(0)
@@ -1030,7 +1192,7 @@ def render_draft_generation():
             assets_to_update = []
             if 'asset_ids' in chapter:
                 # Find assets marked for update
-                assets_in_chapter = [a for a in st.session_state.assets if a['id'] in chapter['asset_ids']]
+                assets_in_chapter = _selected_assets_for_chapter(chapter)
                 for asset in assets_in_chapter:
                     if asset.get('do_update') or asset.get('convert_to_text'):
                         assets_to_update.append(asset)
@@ -1230,8 +1392,8 @@ def run_quality_gate():
     return quality_report
 
 def render_draft_verification():
-    st.header("5. Verification & Refinement")
-    st.write("Review and edit the new report content. Approve suggested visuals.")
+    st.header("6. Draft Review & Visual Approval")
+    st.write("Review and edit the draft, then approve updated originals and any newly suggested visuals.")
 
     def reset_generated_chapter(chapter):
         for key in (
@@ -1291,8 +1453,8 @@ def render_draft_verification():
                     st.rerun()
             
             with col2:
-                st.subheader("Visual Suggestions")
-                if 'suggested_visuals' in chapter:
+                st.subheader("Visual Approval")
+                if chapter.get('suggested_visuals'):
                     # Separate suggestions
                     updates = [v for v in chapter['suggested_visuals'] if v.get('original_asset_id') or v.get('action') == 'update']
                     new_visuals = [v for v in chapter['suggested_visuals'] if v not in updates]
@@ -1331,7 +1493,7 @@ def render_draft_verification():
                                 st.caption(visual.get('description'))
                                 st.checkbox("Approve New Visual", key=f"app_new_{idx}_{n_idx}")
                 else:
-                    st.info("No new visuals suggested.")
+                    st.info("No updated or newly suggested visuals for this chapter.")
 
                 # Show original retained assets independent of above approvals.
                 if 'asset_ids' in chapter:
@@ -1420,7 +1582,7 @@ def render_draft_verification():
         st.rerun()
 
 def render_final_assembly():
-    st.header("6. Final Assembly")
+    st.header("7. Final Assembly")
     st.write("Producing visuals and constructing final document...")
     report_metadata = _serialize_report_metadata(_get_report_metadata())
     

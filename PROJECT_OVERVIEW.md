@@ -7,6 +7,7 @@ Report Updater v3 is a Streamlit application that takes a legacy report in PDF o
 The system:
 - extracts chapters and embedded visuals from the source report
 - lets the user choose which original visuals to keep
+- lets the user decide which retained charts and tables should be updated or converted before drafting
 - analyzes selected visuals with Gemini Vision
 - infers chapter metadata and update settings
 - performs fresh research from web, academic, and uploaded internal sources
@@ -20,19 +21,23 @@ This is not just a parser or summarizer. It is a report modernization pipeline.
 
 ## Primary user workflow
 
-The app is organized as a 6-step state machine in `app.py`.
+The app is organized as a 7-step state machine in `app.py`.
 
-1. Upload and extract
+1. Upload source report
    - User uploads a PDF or DOCX.
-   - The app extracts chapters, text, and embedded images.
+   - The app extracts chapters, text, and embedded visuals after confirmation.
    - It also tries to infer the original report date from front matter.
 
 2. Source asset selection
    - The user reviews extracted visuals.
    - Selected visuals are analyzed with Gemini Vision.
-   - Charts and tables can later be retained, converted, or updated.
+   - The selected set becomes the pool of source visuals that can stay in the updated report.
 
-3. Research planning
+3. Source visual update planning
+   - The user reviews retained source charts and tables on a dedicated screen.
+   - Each item can stay as-is, be refreshed with newer data, or be converted into editable text.
+
+4. Research planning
    - Each chapter gets a blueprint:
      - topic
      - timeframe
@@ -42,7 +47,7 @@ The app is organized as a 6-step state machine in `app.py`.
      - audience
    - The user can upload chapter-specific reference documents.
 
-4. Draft generation
+5. Draft generation
    - The app performs:
      - web research via DuckDuckGo
      - academic research via OpenAlex
@@ -55,9 +60,9 @@ The app is organized as a 6-step state machine in `app.py`.
      - retained and updated claims
      - visual suggestions
 
-5. Verification and refinement
+6. Draft review and visual approval
    - The user edits chapter text.
-   - The user approves or rejects proposed visuals.
+   - The user approves or rejects updated source visuals and newly proposed visuals.
    - A quality gate checks for:
      - unsupported factual claims
      - citation/reference mismatches
@@ -66,7 +71,7 @@ The app is organized as a 6-step state machine in `app.py`.
      - malformed URLs
    - Auto-fixable problems can be cleaned before export.
 
-6. Final assembly
+7. Final assembly
    - Approved graphs are generated.
    - Approved images are searched and downloaded.
    - The final report is assembled as DOCX and Markdown.
@@ -94,7 +99,7 @@ The repo is designed around a 3-layer model:
   - Streamlit UI and end-to-end orchestration
 
 - `directives/Layer_1.md`
-  - master process description for the 6-state workflow
+  - master process description for the 7-state workflow
 
 - `execution/parse_pdf.py`
   - extracts PDF chapters and images

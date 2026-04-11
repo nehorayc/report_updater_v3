@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -18,7 +19,10 @@ for candidate in (str(REPO_ROOT), str(EXECUTION_ROOT)):
 
 
 @pytest.fixture(autouse=True)
-def no_live_gemini(monkeypatch):
+def no_live_gemini(monkeypatch, request):
+    is_live_api_test = request.node.get_closest_marker("live_api") is not None
+    if is_live_api_test and os.getenv("RUN_LIVE_API_TESTS") == "1":
+        return
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
 

@@ -38,19 +38,27 @@ The repo now includes a VS Code dev container in `.devcontainer/`.
 3. The container will install `requirements.txt` automatically on first create.
 4. Start the app from the container terminal:
    ```bash
-   python -m streamlit run app.py
+   ./run.sh
    ```
 
 Port `8501` is forwarded automatically, and Streamlit is configured to bind to `0.0.0.0` inside the container. Your existing `.env` file stays in the workspace and is available to the app as usual.
 
+If you copied the repo from Windows, recreate `.venv` inside the container before using it there. A Windows virtual environment under `.venv\Scripts\` will not run on Linux, and `run.sh` will fall back to the container Python when that happens.
+
 ## Running the App
-You can run the app using the batch file:
+In Linux or the dev container:
+```bash
+./run.sh
+```
+
+On Windows:
 ```bash
 run.bat
 ```
-Or manually via the command line:
+
+Or manually via the command line on any platform:
 ```bash
-streamlit run app.py
+python -m streamlit run app.py
 ```
 
 ## Structure

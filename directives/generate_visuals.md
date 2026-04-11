@@ -1,7 +1,7 @@
-# Directive: Visual Production Logic (State 6)
+# Directive: Visual Production Logic (State 7)
 
 ## Goal
-To produce high-quality, relevant media (graphs and images) for the final report based on approved suggestions from State 5.
+To produce high-quality, relevant media (graphs and images) for the final report based on approved suggestions from State 6.
 
 ## Part A: Graph Generation (LLM Code)
 
@@ -37,7 +37,7 @@ To produce high-quality, relevant media (graphs and images) for the final report
 ## Part C: Final Asset Mapping
 
 ### 1. Placeholder Logic
-The final text in `State 6` will contain markers like `{{VISUAL_ID_123}}`. 
+The final text in `State 7` will contain markers like `{{VISUAL_ID_123}}`. 
 The assembly script must:
 1. Identify the marker.
 2. Fetch the corresponding asset (Source Asset, Generated Graph, or Searched Image).

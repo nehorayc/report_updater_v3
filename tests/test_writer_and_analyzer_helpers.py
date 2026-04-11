@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import chapter_analyzer
+import writer_agent
 from chapter_analyzer import _fallback_analysis, analyze_chapter_content, analyze_chapters_batch
 from writer_agent import (
     _normalize_inline_citations,
@@ -301,6 +302,46 @@ def test_normalize_references_filters_unused_sources_and_maps_original():
     assert "[Original Report]" not in normalized_text
 
 
+def test_normalize_references_maps_explicit_original_reference_tokens():
+    research_findings = [
+        {
+            "title": "Recent Study",
+            "url": "https://example.com/study",
+            "source_type": "academic",
+            "source_credible": True,
+        }
+    ]
+    references = [
+        {
+            "index": 1,
+            "title": "Recent Study",
+            "url": "https://example.com/study",
+            "category": "Academic",
+        },
+        {
+            "index": 2,
+            "title": "Original Report",
+            "category": "Original",
+        },
+    ]
+
+    _, citation_map = _normalize_references(
+        references,
+        research_findings,
+        include_original_reference=True,
+        edition_title="DNA Report",
+        original_report_date="2015-01-01",
+    )
+
+    normalized_text = _normalize_inline_citations(
+        "Fresh claim [1]. Historical framing [Original Report].",
+        citation_map,
+    )
+
+    assert "[Original Report]" not in normalized_text
+    assert normalized_text == "Fresh claim [1]. Historical framing [2]."
+
+
 def test_outline_and_bullet_shaping_helpers_reduce_outline_noise():
     outline_text = "1. Intro\n2. Data\n3. Risks\n4. Outlook"
     softened = _soften_outline_structure(outline_text)
@@ -318,3 +359,75 @@ def test_outline_and_bullet_shaping_helpers_reduce_outline_noise():
     reshaped = _reshape_bullet_heavy_text(bullet_text)
     assert "### Trend" in reshaped
     assert "- " not in reshaped
+
+
+def test_write_chapter_uses_configured_writer_model(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("WRITER_MODEL", "gemini-3-flash-preview")
+
+    class FakeResponse:
+        text = """
+        {
+          "chapter_title": "Configured Model Chapter",
+          "executive_takeaway": "A concise summary.",
+          "retained_claims": ["Claim still holds"],
+          "updated_claims": ["Claim updated"],
+          "new_claims": ["New claim"],
+          "open_questions": [],
+          "text_content": "Evidence-backed update [1].",
+          "visual_suggestions": [
+            {
+              "id": "a1b2c3d4",
+              "type": "graph",
+              "title": "Relevant chart",
+              "description": "Shows a relevant trend",
+              "chart_type": "bar",
+              "data_points": {"labels": ["A"], "values": [1], "unit": "Count"}
+            },
+            {
+              "id": "b1c2d3e4",
+              "type": "image",
+              "title": "Relevant image",
+              "description": "Shows the topic",
+              "query": "configured model test image"
+            }
+          ],
+          "references": [
+            {"index": 1, "title": "Relevant Source", "url": "https://example.com/relevant", "category": "Web"}
+          ]
+        }
+        """
+
+    def fake_generate_content(*, api_key, model, contents, response_mime_type=None, temperature=None):
+        assert api_key == "test-key"
+        assert model == "gemini-3-flash-preview"
+        assert "approved evidence pool" in contents
+        assert response_mime_type == "application/json"
+        return FakeResponse()
+
+    monkeypatch.setattr(writer_agent, "gemini_generate_content", fake_generate_content)
+
+    result = writer_agent.write_chapter(
+        original_text="Original chapter text.",
+        research_findings=[
+            {
+                "title": "Relevant Source",
+                "url": "https://example.com/relevant",
+                "snippet": "Relevant evidence for the chapter.",
+                "source": "web",
+                "source_type": "web",
+                "directly_on_topic": True,
+                "approved_for_writing": True,
+            }
+        ],
+        blueprint={
+            "topic": "Configured model topic",
+            "source_chapter_title": "Configured model topic",
+            "report_subject": "Configured model topic",
+            "original_report_date": "2023-01-01",
+            "update_start_date": "2024-01-01",
+            "update_end_date": "2026-03-22",
+        },
+    )
+
+    assert result["chapter_title"] == "Configured Model Chapter"

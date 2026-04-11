@@ -1,4 +1,5 @@
-﻿from duckduckgo_search import DDGS
+﻿from collections import Counter
+from duckduckgo_search import DDGS
 import os
 import re
 import requests
@@ -35,6 +36,42 @@ _GENERIC_WEB_TITLE_PATTERN = re.compile(
     r"^(?:news archives|all posts|latest news archives|top stories archives|thema:\s*news|news|latest news)(?:\b|[\s\-:|])",
     re.IGNORECASE,
 )
+_TOPIC_WORD_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9\-]{2,}|[\u0590-\u05FF]{2,}")
+_TOPIC_STOPWORDS = {
+    "about",
+    "analysis",
+    "and",
+    "background",
+    "chapter",
+    "current",
+    "data",
+    "digital",
+    "field",
+    "for",
+    "from",
+    "future",
+    "impact",
+    "industry",
+    "information",
+    "introduction",
+    "market",
+    "model",
+    "overview",
+    "policy",
+    "report",
+    "review",
+    "risk",
+    "risks",
+    "section",
+    "study",
+    "technology",
+    "technologies",
+    "trend",
+    "trends",
+    "update",
+    "with",
+}
+_DEFAULT_RESEARCH_RANKER_MODEL = "gemini-2.5-flash"
 
 
 def reset_runtime_diagnostics() -> None:
@@ -263,6 +300,330 @@ def _compute_relevance_score(text: str, topic: str, keywords: List[str]) -> floa
             overlap = sum(1 for token in lowered.split() if token in haystack)
             score += min(0.4, overlap * 0.1)
     return round(score, 2)
+
+
+def _dedupe_preserve_order(values: List[str], *, limit: Optional[int] = None) -> List[str]:
+    results: List[str] = []
+    seen = set()
+    for value in values:
+        normalized = re.sub(r"\s+", " ", str(value or "")).strip()
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(normalized)
+        if limit is not None and len(results) >= limit:
+            break
+    return results
+
+
+def _meaningful_topic_terms(texts: List[str], *, limit: int = 24) -> List[str]:
+    counts: Counter[str] = Counter()
+    for text in texts:
+        for token in _TOPIC_WORD_PATTERN.findall(str(text or "").lower()):
+            if token in _TOPIC_STOPWORDS or len(token) < 3:
+                continue
+            counts[token] += 1
+    return [token for token, _ in counts.most_common(limit)]
+
+
+def _build_topic_profile(blueprint: Dict, topic: str, keywords: List[str]) -> Dict[str, Any]:
+    source_chapter_title = str(blueprint.get("source_chapter_title") or blueprint.get("title") or "").strip()
+    report_subject = str(blueprint.get("report_subject") or blueprint.get("edition_title") or "").strip()
+    baseline_summary = str(blueprint.get("baseline_summary") or "").strip()
+    baseline_claims = [
+        str(item).strip()
+        for item in blueprint.get("baseline_claims", [])[:4]
+        if str(item).strip()
+    ]
+
+    phrase_pool = _dedupe_preserve_order(
+        [topic, source_chapter_title, report_subject, *keywords[:6]],
+        limit=12,
+    )
+    priority_terms = _meaningful_topic_terms([topic, source_chapter_title, report_subject], limit=12)
+    if not priority_terms:
+        priority_terms = _meaningful_topic_terms(phrase_pool, limit=12)
+    context_terms = _meaningful_topic_terms(
+        [*phrase_pool, baseline_summary, *baseline_claims],
+        limit=24,
+    )
+    return {
+        "topic": topic,
+        "source_chapter_title": source_chapter_title,
+        "report_subject": report_subject,
+        "phrases": phrase_pool,
+        "priority_terms": priority_terms,
+        "context_terms": context_terms,
+    }
+
+
+def _contains_topic_token(haystack: str, token: str) -> bool:
+    return bool(re.search(rf"(?<!\w){re.escape(token.lower())}(?!\w)", haystack))
+
+
+def _deterministic_topic_match(finding: Dict[str, Any], topic_profile: Dict[str, Any]) -> Dict[str, Any]:
+    title = str(finding.get("title", "")).strip()
+    snippet = str(finding.get("snippet", "")).strip()
+    haystack = re.sub(r"\s+", " ", f"{title} {snippet}".lower())
+    source_type = str(finding.get("source_type") or finding.get("source") or "web").lower()
+
+    priority_hits = [token for token in topic_profile["priority_terms"] if _contains_topic_token(haystack, token)]
+    context_hits = [token for token in topic_profile["context_terms"] if _contains_topic_token(haystack, token)]
+    phrase_hits = [
+        phrase
+        for phrase in topic_profile["phrases"]
+        if len(phrase) >= 6 and phrase.lower() in haystack
+    ]
+
+    score = (
+        (len(priority_hits) * 1.3)
+        + (len(phrase_hits) * 1.5)
+        + (len(context_hits) * 0.35)
+        + float(finding.get("relevance_score", 0.0)) * 0.2
+        + float(finding.get("source_quality", 0.0)) * 0.1
+    )
+
+    passes = False
+    if source_type in {"uploaded", "internal"}:
+        passes = True
+    elif priority_hits or phrase_hits:
+        passes = True
+    elif len(context_hits) >= (2 if source_type == "academic" else 3):
+        passes = True
+
+    return {
+        "priority_topic_hits": priority_hits,
+        "context_topic_hits": context_hits,
+        "topic_phrase_hits": phrase_hits,
+        "deterministic_topic_score": round(score, 3),
+        "passes_topic_prefilter": passes,
+    }
+
+
+def _prefilter_findings_for_topic(
+    findings: List[Dict[str, Any]],
+    blueprint: Dict[str, Any],
+    topic: str,
+    keywords: List[str],
+) -> List[Dict[str, Any]]:
+    topic_profile = _build_topic_profile(blueprint, topic, keywords)
+    kept: List[Dict[str, Any]] = []
+    dropped = 0
+
+    for finding in findings:
+        enriched = dict(finding)
+        enriched.update(_deterministic_topic_match(enriched, topic_profile))
+        if not enriched.get("passes_topic_prefilter"):
+            dropped += 1
+            logger.info(
+                "Dropping off-topic finding before LLM rerank: %s",
+                enriched.get("title", "Untitled finding"),
+            )
+            continue
+        kept.append(enriched)
+
+    kept.sort(
+        key=lambda item: (
+            item.get("deterministic_topic_score", 0.0),
+            item.get("source_quality", 0.0),
+            item.get("freshness_score", 0.0),
+            item.get("relevance_score", 0.0),
+        ),
+        reverse=True,
+    )
+
+    if dropped:
+        _record_runtime_diagnostic(
+            "warning",
+            f"Filtered out {dropped} off-topic research candidates before writing for '{topic or blueprint.get('source_chapter_title', 'this chapter')}'.",
+        )
+
+    return kept[:24]
+
+
+def _normalize_rerank_response(parsed: Any) -> Dict[str, Dict[str, Any]]:
+    if isinstance(parsed, dict):
+        parsed = parsed.get("sources")
+    if not isinstance(parsed, list):
+        return {}
+
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        source_id = str(item.get("id", "")).strip()
+        if not source_id:
+            continue
+        try:
+            relevance_score = float(item.get("relevance_score", 0.0))
+        except (TypeError, ValueError):
+            relevance_score = 0.0
+        normalized[source_id] = {
+            "relevance_score": max(0.0, min(1.0, relevance_score)),
+            "directly_on_topic": bool(item.get("directly_on_topic")),
+            "background_only": bool(item.get("background_only")),
+            "cross_domain_analogy": bool(item.get("cross_domain_analogy")),
+            "keep": bool(item.get("keep")),
+            "reason": str(item.get("reason", "")).strip(),
+        }
+    return normalized
+
+
+def _apply_deterministic_approval(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    approved: List[Dict[str, Any]] = []
+    for finding in findings:
+        candidate = dict(finding)
+        direct = bool(candidate.get("priority_topic_hits") or candidate.get("topic_phrase_hits"))
+        candidate["llm_relevance_score"] = min(1.0, candidate.get("deterministic_topic_score", 0.0) / 4.0)
+        candidate["directly_on_topic"] = direct
+        candidate["background_only"] = False
+        candidate["cross_domain_analogy"] = False
+        candidate["approved_for_writing"] = direct or str(candidate.get("source_type", "")).lower() in {"uploaded", "internal"}
+        candidate["approval_strategy"] = "deterministic"
+        approved.append(candidate)
+    return approved
+
+
+def _llm_rerank_findings_for_topic(
+    findings: List[Dict[str, Any]],
+    blueprint: Dict[str, Any],
+    topic: str,
+    keywords: List[str],
+) -> List[Dict[str, Any]]:
+    if not findings:
+        return []
+
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except Exception:
+        pass
+
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return _apply_deterministic_approval(findings)
+
+    if len(findings) == 1:
+        return _apply_deterministic_approval(findings)
+
+    model = os.getenv("RESEARCH_RANKER_MODEL", _DEFAULT_RESEARCH_RANKER_MODEL).strip() or _DEFAULT_RESEARCH_RANKER_MODEL
+    source_chapter_title = str(blueprint.get("source_chapter_title") or blueprint.get("title") or "").strip()
+    report_subject = str(blueprint.get("report_subject") or blueprint.get("edition_title") or "").strip()
+    baseline_summary = str(blueprint.get("baseline_summary") or "").strip()
+    baseline_claims = [
+        str(item).strip()
+        for item in blueprint.get("baseline_claims", [])[:4]
+        if str(item).strip()
+    ]
+
+    candidate_lines = []
+    for index, finding in enumerate(findings, start=1):
+        candidate_lines.append(
+            f"- id: {index}\n"
+            f"  title: {finding.get('title', 'Untitled')}\n"
+            f"  source_type: {finding.get('source_type', finding.get('source', 'web'))}\n"
+            f"  published_date: {finding.get('published_date', 'Unknown')}\n"
+            f"  url: {finding.get('url', 'N/A')}\n"
+            f"  deterministic_hits: priority={','.join(finding.get('priority_topic_hits', [])) or 'none'}; "
+            f"phrases={','.join(finding.get('topic_phrase_hits', [])) or 'none'}; "
+            f"context={','.join(finding.get('context_topic_hits', [])[:6]) or 'none'}\n"
+            f"  abstract_or_snippet: {str(finding.get('snippet', '')).strip()[:700]}"
+        )
+
+    prompt = f"""
+You are reranking candidate sources for a single report chapter.
+
+Return ONLY valid JSON in this format:
+{{
+  "sources": [
+    {{
+      "id": "1",
+      "relevance_score": 0.0,
+      "directly_on_topic": true,
+      "background_only": false,
+      "cross_domain_analogy": false,
+      "keep": true,
+      "reason": "short explanation"
+    }}
+  ]
+}}
+
+Chapter topic: {topic}
+Source chapter title: {source_chapter_title}
+Report subject: {report_subject}
+Chapter keywords: {", ".join(keywords[:8])}
+Baseline summary: {baseline_summary or "N/A"}
+Baseline claims:
+{chr(10).join(f"- {claim}" for claim in baseline_claims) or "- None supplied"}
+
+Decision rules:
+- Keep only sources that are directly relevant to this chapter's subject and can support factual claims in the rewritten chapter.
+- Mark `background_only=true` for broad context or analogy sources that are not safe as primary evidence.
+- Mark `cross_domain_analogy=true` for sources from other sectors or disciplines that only resemble the topic superficially.
+- If a source is mainly about a different domain, set `keep=false`.
+- Prefer sources that match the source chapter title, report subject, and chapter keywords simultaneously.
+
+Candidate sources:
+{chr(10).join(candidate_lines)}
+"""
+
+    try:
+        response = gemini_generate_content(
+            api_key=api_key,
+            model=model,
+            contents=prompt,
+            response_mime_type="application/json",
+            temperature=0.0,
+        )
+        ranked = _normalize_rerank_response(try_parse_json(response.text.strip()))
+    except Exception as exc:
+        logger.warning("Research reranker failed: %s", exc)
+        if _is_quota_error(exc):
+            _record_runtime_diagnostic(
+                "warning",
+                "Gemini quota was exhausted while reranking research sources. The app fell back to deterministic topic filtering.",
+            )
+        return _apply_deterministic_approval(findings)
+
+    approved: List[Dict[str, Any]] = []
+    for index, finding in enumerate(findings, start=1):
+        candidate = dict(finding)
+        rating = ranked.get(str(index), {})
+        direct = bool(rating.get("directly_on_topic"))
+        background_only = bool(rating.get("background_only"))
+        cross_domain = bool(rating.get("cross_domain_analogy"))
+        keep = bool(rating.get("keep"))
+        source_type = str(candidate.get("source_type", candidate.get("source", "web"))).lower()
+
+        candidate["llm_relevance_score"] = float(rating.get("relevance_score", 0.0))
+        candidate["directly_on_topic"] = direct
+        candidate["background_only"] = background_only
+        candidate["cross_domain_analogy"] = cross_domain
+        candidate["approval_strategy"] = "llm_rerank"
+        candidate["relevance_reason"] = str(rating.get("reason", "")).strip()
+        candidate["approved_for_writing"] = (
+            source_type in {"uploaded", "internal"}
+            or (keep and direct and not background_only and not cross_domain)
+        )
+        approved.append(candidate)
+
+    approved_for_writing = [item for item in approved if item.get("approved_for_writing")]
+    if not approved_for_writing:
+        fallback = _apply_deterministic_approval(findings[:8])
+        for item in fallback:
+            item["approval_strategy"] = "deterministic_fallback"
+            item["approved_for_writing"] = True
+        _record_runtime_diagnostic(
+            "warning",
+            f"LLM reranking rejected all candidate sources for '{topic or source_chapter_title or 'this chapter'}'. Falling back to deterministic topic matches.",
+        )
+        return fallback
+
+    return approved
 
 
 def _source_quality(source: str) -> float:
@@ -675,6 +1036,8 @@ def _build_research_cache_key(blueprint: Dict, window: Dict[str, Optional[int]])
     )
     return (
         topic,
+        str(blueprint.get("source_chapter_title", "")).strip().lower(),
+        str(blueprint.get("report_subject", "")).strip().lower(),
         keywords,
         window.get("original_year"),
         window.get("start_year"),
@@ -754,16 +1117,24 @@ def perform_comprehensive_research(blueprint: Dict) -> List[Dict]:
         seen_keys.add(dedupe_key)
         deduped.append(finding)
 
-    deduped.sort(
+    prefiltered = _prefilter_findings_for_topic(deduped, blueprint, en_topic, en_keywords)
+    reranked = _llm_rerank_findings_for_topic(prefiltered, blueprint, en_topic, en_keywords)
+    reranked.sort(
         key=lambda item: (
-            item.get('source_quality', 0),
-            item.get('freshness_score', 0),
-            item.get('relevance_score', 0),
+            bool(item.get("approved_for_writing")),
+            bool(item.get("directly_on_topic")),
+            item.get("llm_relevance_score", 0.0),
+            item.get("deterministic_topic_score", 0.0),
+            item.get("source_quality", 0.0),
+            item.get("freshness_score", 0.0),
+            item.get("relevance_score", 0.0),
         ),
         reverse=True,
     )
 
-    trimmed = deduped[:15]
+    trimmed = [item for item in reranked if item.get("approved_for_writing")][:12]
+    if not trimmed:
+        trimmed = reranked[:8]
     _RESEARCH_RESULT_CACHE[research_cache_key] = _clone_findings(trimmed)
     return _clone_findings(trimmed)
 

@@ -76,6 +76,39 @@ def test_markdown_and_docx_exports_strip_raw_visual_tokens(tmp_path: Path, repor
     assert "Dummy Visual" in document_xml
 
 
+def test_docx_export_embeds_visual_assets(tmp_path: Path, report_metadata, sample_visual):
+    chapter = {
+        "title": "Embedded Visual Chapter",
+        "draft_text": (
+            "Overview [1].\n\n"
+            "[Figure abcdef12: Dummy Visual]\n\n"
+            "The exported DOCX should contain an embedded image asset."
+        ),
+        "approved_visuals": [sample_visual],
+        "references": [
+            {"index": 1, "title": "Recent Update", "url": "https://example.com/update", "category": "Web"}
+        ],
+    }
+
+    docx_path = build_final_report(
+        [chapter],
+        output_path=str(tmp_path / "embedded-report.docx"),
+        title="Embedded Visual Report",
+        report_metadata=report_metadata,
+    )
+
+    with zipfile.ZipFile(docx_path) as archive:
+        archive_members = archive.namelist()
+        media_members = [name for name in archive_members if name.startswith("word/media/")]
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+        rels_xml = archive.read("word/_rels/document.xml.rels").decode("utf-8")
+
+    assert len(media_members) == 1
+    assert "Dummy Visual" in document_xml
+    assert "[Figure abcdef12" not in document_xml
+    assert "relationships/image" in rels_xml
+
+
 def test_exports_omit_synthetic_front_matter_by_default(tmp_path: Path, report_metadata):
     chapter = {
         "title": "Background",

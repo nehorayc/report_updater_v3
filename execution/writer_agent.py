@@ -30,6 +30,7 @@ BULLET_LINE_PATTERN = re.compile(r"^\s*[*-]\s+(.*)$")
 BULLET_HEADING_PATTERN = re.compile(r"^\s*[*-]\s+\*\*(.+?)\*\*:?\s*(.*)$")
 MARKDOWN_HEADING_PATTERN = re.compile(r"^\s*#{1,6}\s+(.+?)\s*$")
 PRIVATE_USE_PATTERN = re.compile(r"[\uE000-\uF8FF]")
+_DEFAULT_WRITER_MODEL = "gemini-3-flash-preview"
 
 
 def _stringify_findings(research_findings: List[Dict[str, Any]]) -> str:
@@ -40,8 +41,12 @@ def _stringify_findings(research_findings: List[Dict[str, Any]]) -> str:
         url = finding.get("url") or "N/A"
         source_type = finding.get("source_type") or finding.get("source") or "unknown"
         published_date = finding.get("published_date") or "Unknown"
+        scope = "Direct" if finding.get("directly_on_topic", True) else "Background"
+        reason = str(finding.get("relevance_reason", "")).strip()
         lines.append(
-            f"- [{index}] {title} | Source Type: {source_type} | Published: {published_date} | URL: {url} | Snippet: {snippet}"
+            f"- [{index}] {title} | Source Type: {source_type} | Scope: {scope} | Published: {published_date} | "
+            f"URL: {url} | Snippet: {snippet}"
+            + (f" | Reviewer note: {reason}" if reason else "")
         )
     return "\n".join(lines)
 
@@ -397,6 +402,8 @@ def _normalize_references(
                 token = _reference_token(candidate)
                 if token:
                     raw_tokens.add(token)
+            if category == "Original":
+                raw_tokens.add("Original")
 
     if include_original_reference and not any(ref.get("category") == "Original" for ref in normalized_refs):
         title = edition_title or "Original report"
@@ -468,6 +475,10 @@ def _normalize_response(parsed: Dict[str, Any], fallback_title: str) -> Dict[str
         "references": [],
     }
     return normalized
+
+
+def _writer_model_name() -> str:
+    return os.getenv("WRITER_MODEL", _DEFAULT_WRITER_MODEL).strip() or _DEFAULT_WRITER_MODEL
 
 
 def write_chapter(
@@ -574,6 +585,10 @@ Recent Research Findings:
 {findings_str}
 ---
 
+Research Filtering Note:
+- The research findings above were pre-screened for chapter relevance before reaching this writer step.
+- Treat them as the approved evidence pool for this chapter.
+
 Highest-Value Evidence Snapshot:
 {evidence_snapshot}
 
@@ -600,6 +615,10 @@ CRITICAL WRITING RULES:
 - Preserve the original chapter's logic, intent, and strongest insights where they still hold up.
 - The updated chapter should clearly reflect developments between {update_start_date} and {update_end_date}.
 - Use the original text for context and continuity, but let the new evidence carry the chapter forward.
+- Use ONLY the approved research findings above as external evidence for factual updates.
+- Do not use cross-domain or merely analogical evidence as direct support for chapter claims.
+- If the approved findings do not support a correction, preserve the source framing and state uncertainty instead of improvising.
+- Do not reinterpret, overturn, or "correct" what the original report said unless the approved findings explicitly support that change.
 - Treat the source chapter structure as the default scaffold. If the source includes internal headings, preserve them in the same order unless one is clearly broken or redundant.
 - Use earlier approved chapters only to maintain continuity, terminology, transitions, and non-overlap. They are supporting context, not the authority for this chapter.
 - Ignore obvious PDF/OCR debris in the source text, such as isolated glyphs, repeated legend labels, axis fragments, or broken table lines, unless prose context clearly confirms their meaning.
@@ -695,7 +714,7 @@ OUTPUT FORMAT (MANDATORY JSON):
     try:
         response = gemini_generate_content(
             api_key=api_key,
-            model="gemini-2.5-flash",
+            model=_writer_model_name(),
             contents=prompt,
             response_mime_type="application/json",
             temperature=temperature,

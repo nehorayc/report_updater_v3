@@ -6,14 +6,14 @@
 ## 1. Project Overview & Goals
 **Project Name:** Report Updater (Horizon/Elisha v1)
 **Goal:** Build a Streamlit application that modernizes legacy reports. It ingests a source document, filters source assets, plans research, generates a draft, and allows deep user refinement before final export.
-**Key Workflow:** Ingest $\rightarrow$ Filter Source Assets $\rightarrow$ Plan Research $\rightarrow$ Generate Draft $\rightarrow$ **Verify & Select New Visuals** $\rightarrow$ Final Export.
+**Key Workflow:** Ingest $\rightarrow$ Filter Source Assets $\rightarrow$ Plan Source Visual Updates $\rightarrow$ Plan Research $\rightarrow$ Generate Draft $\rightarrow$ **Review Draft & Approve Visuals** $\rightarrow$ Final Export.
 
 ---
 
-## 2. Architecture: The 6-Step State Machine
-The application logic follows a linear state machine in `app.py`, with a feedback loop at Step 5.
+## 2. Architecture: The 7-Step State Machine
+The application logic follows a linear state machine in `app.py`, with a feedback loop at Step 6.
 
-### **State 1: UPLOAD & BLIND EXTRACTION**
+### **State 1: UPLOAD SOURCE REPORT**
 *   **Input:** User uploads **Source Report** (PDF/DOCX).
 *   **Action:**
     *   **File Parsing:** Split document into chapters.
@@ -29,7 +29,16 @@ The application logic follows a linear state machine in `app.py`, with a feedbac
     *   **Vision Analysis:** Transcribe selected Graph/Table data via Gemini Vision.
     *   **Text Analysis:** Analyze chapters to determine initial Topic, Timeframe, and Keywords.
 
-### **State 3: RESEARCH PLANNING (Metadata Editor)**
+### **State 3: SOURCE VISUAL UPDATE PLANNING**
+*   **Goal:** User decides which retained source charts/tables should stay as-is, be refreshed, or be converted.
+*   **UI:** Dedicated gallery/cards for selected charts and tables.
+*   **User Action:**
+    *   **Keep Original:** Preserve the source visual as-is.
+    *   **Refresh with Updated Data:** Provide or edit a research query for a rebuilt chart/table.
+    *   **Convert Table to Editable Text:** Turn a retained source table into markdown text for the draft.
+*   **System Action:** Save `do_update`, `convert_to_text`, and `update_query` decisions on the selected source assets.
+
+### **State 4: RESEARCH PLANNING (Metadata Editor)**
 *   **Goal:** User defines *how* the research should be conducted.
 *   **UI:** List of chapters with editable settings.
 *   **User Action:**
@@ -39,7 +48,7 @@ The application logic follows a linear state machine in `app.py`, with a feedbac
     *   **Upload Reference Docs:** Add internal PDFs/DOCXs (mapped to chapters via keywords).
 *   **System Action:** Save the "Research Blueprint" for each chapter.
 
-### **State 4: DRAFT GENERATION (The Engine)**
+### **State 5: DRAFT GENERATION (The Engine)**
 *   **Action:** Iterate through chapters (or a single chapter if regenerating).
     1.  **Research:** Execute Web (DuckDuckGo), Academic (OpenAlex), and Internal (uploaded doc) searches based on the Blueprint.
     2.  **Writing:** Generate the new chapter text.
@@ -48,18 +57,18 @@ The application logic follows a linear state machine in `app.py`, with a feedbac
         *   *Example output:* `{"type": "graph", "title": "Market Growth", "description": "Bar chart showing 5% growth", "location": "after_paragraph_2"}`.
     4.  **No Rendering Yet:** Do *not* generate the actual graph images yet. Just store the text text/code suggestions.
 
-### **State 5: DRAFT VERIFICATION & REFINEMENT (The Loop)**
-*   **Goal:** User reviews the draft, adjusts settings if needed, and selects new visuals.
+### **State 6: DRAFT REVIEW & VISUAL APPROVAL (The Loop)**
+*   **Goal:** User reviews the draft, adjusts settings if needed, and approves both updated source visuals and new visuals.
 *   **UI Structure (Per Chapter):**
     1.  **Draft Preview:** Show the rewritten text.
     2.  **Settings Used:** Display Topic, Timeframe, Keywords.
-        *   *Action:* If User changes these settings $\rightarrow$ Button: **"Regenerate Chapter Text"** (Triggers State 4 logic again for this chapter).
+        *   *Action:* If User changes these settings $\rightarrow$ Button: **"Regenerate Chapter Text"** (Triggers State 5 logic again for this chapter).
     3.  **Visual Suggestions:**
         *   Display the AI's proposed graphs/images descriptions.
         *   *Action:* User checks `[x] Approve`.
 *   **Transition to Final:** User clicks "Finalize Report".
 
-### **State 6: FINAL ASSEMBLY (Render & Export)**
+### **State 7: FINAL ASSEMBLY (Render & Export)**
 *   **Action:**
     1.  **Visual Production:**
         *   **Graphs:** Execute Python code (Matplotlib/Plotly) for *Approved* graphs.
@@ -67,7 +76,7 @@ The application logic follows a linear state machine in `app.py`, with a feedbac
     2.  **Document Construction:**
         *   Combine rewritten text.
         *   Embed **Selected Source Assets** (from State 2).
-        *   Embed **Newly Generated Visuals** (from State 6).
+        *   Embed **Newly Generated Visuals** (from State 7).
     3.  **Bibliography:** Consolidate references (Internal/Web/Academic).
 *   **Output:** Download Buttons (.md / .docx).
 
@@ -92,11 +101,11 @@ The application logic follows a linear state machine in `app.py`, with a feedbac
     ```
 
 ### **B. Reference Material**
-*   **Logic:** Loaded in State 3. Filtered during State 4 (Research) based on keyword matching.
+*   **Logic:** Loaded in State 4. Filtered during State 5 (Research) based on keyword matching.
 
 ---
 
-## 4. Writing & Research Logic (State 4)
+## 4. Writing & Research Logic (State 5)
 
 ### **A. The Prompt Strategy (Two-Part Output)**
 *   **Input:** Research Findings + Original Text + User Blueprint.
@@ -106,14 +115,14 @@ The application logic follows a linear state machine in `app.py`, with a feedbac
     3.  **Output Format:** JSON or XML structure containing `text_content` AND `visual_suggestions`.
 
 ### **B. Regeneration Logic**
-*   In **State 5**, if "Regenerate" is clicked:
+*   In **State 6**, if "Regenerate" is clicked:
     *   Clear `draft_text` and `suggested_visuals` for that chapter.
     *   Re-run the Research & Write function using the *newly edited* Blueprint settings.
     *   Update the UI with the new version.
 
 ---
 
-## 5. Visual Production Logic (State 6)
+## 5. Visual Production Logic (State 7)
 
 ### **A. Graph Generation**
 *   **Input:** The "Visual Suggestion" (which contains data points and chart type).

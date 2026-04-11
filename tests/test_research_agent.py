@@ -59,6 +59,7 @@ def test_search_internal_returns_paragraph_matches(sample_txt_path: Path):
 
 def test_perform_comprehensive_research_sorts_and_dedupes(monkeypatch, sample_txt_path: Path):
     research_agent._RESEARCH_RESULT_CACHE.clear()
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setattr(research_agent.time, "sleep", lambda _: None)
     monkeypatch.setattr(
         research_agent,
@@ -200,6 +201,7 @@ def test_search_web_uses_query_cache(monkeypatch):
 
 def test_perform_comprehensive_research_uses_result_cache(monkeypatch):
     research_agent._RESEARCH_RESULT_CACHE.clear()
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
     calls = {"translate_terms": 0, "web": 0, "academic": 0}
 
@@ -240,3 +242,126 @@ def test_perform_comprehensive_research_uses_result_cache(monkeypatch):
     assert calls["translate_terms"] == 1
     assert calls["web"] == 4
     assert calls["academic"] == 4
+
+
+def test_prefilter_findings_for_topic_drops_clearly_off_topic_sources():
+    findings = [
+        {
+            "title": "DNA data storage commercialization roadmap",
+            "snippet": "DNA storage systems are moving toward archival deployment and synthesis cost reduction.",
+            "source": "academic",
+            "source_type": "academic",
+            "source_quality": 1.0,
+            "freshness_score": 1.0,
+            "relevance_score": 1.5,
+        },
+        {
+            "title": "Personalized nutrition and omics data integration",
+            "snippet": "Nutrition data fusion and omics analytics support personalized dietary recommendations.",
+            "source": "academic",
+            "source_type": "academic",
+            "source_quality": 1.0,
+            "freshness_score": 1.0,
+            "relevance_score": 0.7,
+        },
+    ]
+
+    filtered = research_agent._prefilter_findings_for_topic(
+        findings,
+        {
+            "topic": "DNA digital data storage",
+            "source_chapter_title": "DNA digital data storage",
+            "report_subject": "DNA digital data storage",
+            "keywords": ["DNA storage", "archival storage"],
+        },
+        "DNA digital data storage",
+        ["DNA storage", "archival storage"],
+    )
+
+    assert len(filtered) == 1
+    assert filtered[0]["title"] == "DNA data storage commercialization roadmap"
+
+
+def test_llm_rerank_marks_only_direct_sources_as_approved(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("RESEARCH_RANKER_MODEL", "gemini-2.5-flash")
+
+    class FakeResponse:
+        text = """
+        {
+          "sources": [
+            {
+              "id": "1",
+              "relevance_score": 0.96,
+              "directly_on_topic": true,
+              "background_only": false,
+              "cross_domain_analogy": false,
+              "keep": true,
+              "reason": "Directly about DNA data storage."
+            },
+            {
+              "id": "2",
+              "relevance_score": 0.18,
+              "directly_on_topic": false,
+              "background_only": true,
+              "cross_domain_analogy": true,
+              "keep": false,
+              "reason": "Only tangential biotech analogy."
+            }
+          ]
+        }
+        """
+
+    def fake_generate_content(*, api_key, model, contents, response_mime_type=None, temperature=None):
+        assert api_key == "test-key"
+        assert model == "gemini-2.5-flash"
+        assert "DNA digital data storage" in contents
+        assert response_mime_type == "application/json"
+        return FakeResponse()
+
+    monkeypatch.setattr(research_agent, "gemini_generate_content", fake_generate_content)
+
+    reranked = research_agent._llm_rerank_findings_for_topic(
+        [
+            {
+                "title": "DNA data storage commercialization roadmap",
+                "snippet": "DNA storage systems are moving toward archival deployment.",
+                "source": "academic",
+                "source_type": "academic",
+                "source_quality": 1.0,
+                "freshness_score": 1.0,
+                "relevance_score": 1.2,
+                "priority_topic_hits": ["dna", "storage"],
+                "topic_phrase_hits": ["DNA digital data storage"],
+                "context_topic_hits": ["digital", "storage"],
+                "deterministic_topic_score": 4.2,
+                "passes_topic_prefilter": True,
+            },
+            {
+                "title": "Personalized nutrition and omics data integration",
+                "snippet": "Nutrition data fusion and omics analytics support personalized dietary recommendations.",
+                "source": "academic",
+                "source_type": "academic",
+                "source_quality": 1.0,
+                "freshness_score": 1.0,
+                "relevance_score": 0.4,
+                "priority_topic_hits": [],
+                "topic_phrase_hits": [],
+                "context_topic_hits": ["data"],
+                "deterministic_topic_score": 0.9,
+                "passes_topic_prefilter": True,
+            },
+        ],
+        {
+            "topic": "DNA digital data storage",
+            "source_chapter_title": "DNA digital data storage",
+            "report_subject": "DNA digital data storage",
+            "keywords": ["DNA storage", "archival storage"],
+        },
+        "DNA digital data storage",
+        ["DNA storage", "archival storage"],
+    )
+
+    approved = [item for item in reranked if item.get("approved_for_writing")]
+    assert len(approved) == 1
+    assert approved[0]["title"] == "DNA data storage commercialization roadmap"
