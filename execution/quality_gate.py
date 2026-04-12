@@ -10,17 +10,21 @@ FACTUAL_SIGNAL_PATTERN = re.compile(
     r"(\b(?:19|20)\d{2}\b|[$€£]\s?\d|\b\d+(?:\.\d+)?%|\baccording to\b|\breported\b|\bincreased\b|\bdecreased\b|\breached\b|\bgrew\b)",
     re.IGNORECASE,
 )
-FIGURE_MARKER_PATTERN = re.compile(
-    r"\[(?:Figure|Asset|Image|Figura|איור|תמונה):?\s*([a-zA-Z0-9]{8,32})[:\s]*.*?\]",
+CITATION_GROUP_PATTERN = re.compile(
+    r"\[((?:\s*(?:Original(?:\s+Report)?|\d+)\s*)(?:,\s*(?:Original(?:\s+Report)?|\d+)\s*)*)\]",
     re.IGNORECASE,
 )
-RAW_VISUAL_TOKEN_PATTERN = re.compile(r"\[\s*visual\s*:\s*([a-zA-Z0-9]{8,32})[^\]]*\]", re.IGNORECASE)
+FIGURE_MARKER_PATTERN = re.compile(
+    r"\[(?:Figure|Asset|Image|Figura|איור|תמונה)(?:\s+ID)?\s*:?\s*([A-Za-z0-9][A-Za-z0-9_-]{3,63})[:\s]*.*?\]",
+    re.IGNORECASE,
+)
+RAW_VISUAL_TOKEN_PATTERN = re.compile(r"\[\s*visual\s*:\s*([A-Za-z0-9][A-Za-z0-9_-]{3,63})[^\]]*\]", re.IGNORECASE)
 URL_PATTERN = re.compile(r"^https?://\S+$", re.IGNORECASE)
 CITATION_PATTERN = re.compile(r"\[\s*(Original(?:\s+Report)?|\d+)\s*\]", re.IGNORECASE)
 RAW_ORIGINAL_CITATION_PATTERN = re.compile(r"\[\s*Original\s+Report\s*\]", re.IGNORECASE)
 STRUCTURAL_PARAGRAPH_PATTERN = re.compile(r"^(?:[#|]|[-*]\s|\d+\.\s|\[(?:Figure|Asset|Image|Figura|איור|תמונה|visual))", re.IGNORECASE)
 META_PROMPT_LEAK_PATTERN = re.compile(
-    r"(diverging from the original report's focus|align with the specified user objective|this updated edition addresses the topic of|user objective)",
+    r"(diverging from the original report's focus|align with the specified user objective|this updated edition addresses the topic of|user objective|analyst agent)",
     re.IGNORECASE,
 )
 PRIVATE_USE_PATTERN = re.compile(r"[\uE000-\uF8FF]")
@@ -64,6 +68,24 @@ def _extract_year(value: Any) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
+def _normalize_citation_token(value: Any) -> str:
+    token = str(value or "").strip()
+    if not token:
+        return ""
+    if token.isdigit():
+        return str(int(token))
+    if token.lower() in {"original", "original report"}:
+        return "Original"
+    return token
+
+
+def _normalize_marker_token(value: Any) -> str:
+    token = str(value or "").strip().lower()
+    if not token:
+        return ""
+    return re.sub(r"[^a-z0-9_-]", "", token)
+
+
 def _time_window(report_metadata: Dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
     start_year = _extract_year(report_metadata.get("update_start_date"))
     end_year = _extract_year(report_metadata.get("update_end_date")) or datetime.now().year
@@ -80,11 +102,23 @@ def _split_paragraphs(text: str) -> List[str]:
 def _approved_visual_ids(chapter: Dict[str, Any]) -> set[str]:
     ids = set()
     for visual in chapter.get("approved_visuals", []):
-        for key in ("id", "original_asset_id"):
-            value = visual.get(key)
+        for key in ("marker_id", "id", "original_asset_id"):
+            value = _normalize_marker_token(visual.get(key))
             if value:
-                ids.add(str(value)[:8].lower())
+                ids.add(value)
+                if len(value) > 8:
+                    ids.add(value[:8])
     return ids
+
+
+def _citation_numbers_in_text(text: str) -> set[int]:
+    numbers: set[int] = set()
+    for group in CITATION_GROUP_PATTERN.findall(text or ""):
+        for raw_token in group.split(","):
+            normalized = _normalize_citation_token(raw_token)
+            if normalized.isdigit():
+                numbers.add(int(normalized))
+    return numbers
 
 
 def _reference_index(ref: Dict[str, Any], fallback_position: int) -> int:
@@ -157,15 +191,48 @@ def _looks_like_artifact_line(line: str) -> bool:
     return False
 
 
+def _looks_like_artifact_heading(line: str) -> bool:
+    match = MARKDOWN_HEADING_PATTERN.match(str(line or "").strip())
+    if not match:
+        return False
+    heading = re.sub(r"\s+", " ", match.group(1)).strip()
+    lowered = heading.lower()
+    if not heading:
+        return True
+    if PRIVATE_USE_PATTERN.search(heading):
+        return True
+    if "area boxes" in lowered:
+        return True
+    if heading.endswith("•") or heading.endswith("·"):
+        return True
+    return False
+
+
+def _has_empty_heading_block(text: str) -> bool:
+    lines = str(text or "").splitlines()
+    for index, line in enumerate(lines):
+        if not MARKDOWN_HEADING_PATTERN.match(line.strip()):
+            continue
+        next_index = index + 1
+        while next_index < len(lines) and not lines[next_index].strip():
+            next_index += 1
+        if next_index >= len(lines):
+            return True
+        next_line = lines[next_index].strip()
+        if MARKDOWN_HEADING_PATTERN.match(next_line) or re.match(r"^\s*(?:---|\*\*\*|___)\s*$", next_line):
+            return True
+    return False
+
+
 def _nearby_numeric_citations(paragraphs: List[str], index: int) -> List[str]:
     citations: List[str] = []
     for neighbor_index in (index - 1, index + 1):
         if neighbor_index < 0 or neighbor_index >= len(paragraphs):
             continue
-        for match in re.finditer(r"\[(\d+)\]", paragraphs[neighbor_index]):
-            token = str(int(match.group(1)))
-            if token not in citations:
-                citations.append(token)
+        for token in sorted(_citation_numbers_in_text(paragraphs[neighbor_index])):
+            string_token = str(token)
+            if string_token not in citations:
+                citations.append(string_token)
     return citations
 
 
@@ -175,11 +242,14 @@ def _chapter_issues(chapter: Dict[str, Any], start_year: Optional[int], end_year
     references = chapter.get("references", [])
     paragraphs = _split_paragraphs(draft_text)
 
-    citation_numbers = {int(match) for match in re.findall(r"\[(\d+)\]", draft_text)}
+    citation_numbers = _citation_numbers_in_text(draft_text)
     chapter_is_well_cited = len(citation_numbers) >= 3 or len(references) >= 3
     local_reference_indices = set()
     for position, ref in enumerate(references, start=1):
-        local_reference_indices.add(_reference_index(ref, position))
+            local_reference_indices.add(_reference_index(ref, position))
+            normalized_ref_index = _normalize_citation_token(ref.get("index", position))
+            if normalized_ref_index.isdigit():
+                local_reference_indices.add(int(normalized_ref_index))
 
     if META_PROMPT_LEAK_PATTERN.search(draft_text):
         issues.append(
@@ -204,7 +274,7 @@ def _chapter_issues(chapter: Dict[str, Any], start_year: Optional[int], end_year
             )
         )
 
-    if any(_looks_like_artifact_line(line) for line in draft_text.splitlines()):
+    if any(_looks_like_artifact_line(line) or _looks_like_artifact_heading(line) for line in draft_text.splitlines()):
         issues.append(
             _issue(
                 "warning",
@@ -216,10 +286,22 @@ def _chapter_issues(chapter: Dict[str, Any], start_year: Optional[int], end_year
             )
         )
 
+    if _has_empty_heading_block(draft_text):
+        issues.append(
+            _issue(
+                "warning",
+                "empty_heading_block",
+                "The chapter contains empty or consecutive markdown headings with no body text between them.",
+                hint="Clean Fixable Issues can remove empty heading ladders before export.",
+                auto_fixable=True,
+                context=_compact_context(draft_text),
+            )
+        )
+
     for paragraph_number, paragraph in enumerate(paragraphs, start=1):
         if _is_structural_paragraph(paragraph):
             continue
-        if FACTUAL_SIGNAL_PATTERN.search(paragraph) and not re.search(r"\[\d+\]", paragraph):
+        if FACTUAL_SIGNAL_PATTERN.search(paragraph) and not _citation_numbers_in_text(paragraph):
             nearby_citations = _nearby_numeric_citations(paragraphs, paragraph_number - 1)
             issues.append(
                 _issue(
@@ -293,15 +375,16 @@ def _chapter_issues(chapter: Dict[str, Any], start_year: Optional[int], end_year
 
     approved_visual_ids = _approved_visual_ids(chapter)
     for marker in FIGURE_MARKER_PATTERN.findall(draft_text):
-        if marker[:8].lower() not in approved_visual_ids:
+        normalized_marker = _normalize_marker_token(marker)
+        if normalized_marker not in approved_visual_ids and normalized_marker[:8] not in approved_visual_ids:
             issues.append(
                 _issue(
                     "error",
                     "broken_figure_marker",
-                    f"Figure marker {marker[:8]} does not match any approved visual.",
+                    f"Figure marker {normalized_marker[:8]} does not match any approved visual.",
                     hint="Clean Fixable Issues can remove orphaned figure markers, or you can approve the matching visual.",
                     auto_fixable=True,
-                    context=marker[:8],
+                    context=normalized_marker[:32],
                 )
             )
             break
@@ -405,7 +488,7 @@ def _borrow_nearby_citations(chapter: Dict[str, Any]) -> int:
     repaired_paragraphs: List[str] = []
     for index, paragraph in enumerate(paragraphs):
         stripped = paragraph.strip()
-        if _is_structural_paragraph(stripped) or re.search(r"\[\d+\]", stripped) or not FACTUAL_SIGNAL_PATTERN.search(stripped):
+        if _is_structural_paragraph(stripped) or _citation_numbers_in_text(stripped) or not FACTUAL_SIGNAL_PATTERN.search(stripped):
             repaired_paragraphs.append(stripped)
             continue
 
@@ -433,8 +516,8 @@ def _remove_broken_figure_markers(chapter: Dict[str, Any]) -> int:
 
     def replace(match: re.Match[str]) -> str:
         nonlocal removals
-        marker = match.group(1)[:8].lower()
-        if marker in approved_visual_ids:
+        marker = _normalize_marker_token(match.group(1))
+        if marker in approved_visual_ids or marker[:8] in approved_visual_ids:
             return match.group(0)
         removals += 1
         return ""
@@ -491,7 +574,7 @@ def _remove_artifact_lines(chapter: Dict[str, Any]) -> int:
     removals = 0
     cleaned_lines: List[str] = []
     for line in draft_text.splitlines():
-        if _looks_like_artifact_line(line):
+        if _looks_like_artifact_line(line) or _looks_like_artifact_heading(line):
             removals += 1
             continue
         cleaned_lines.append(line.rstrip())
@@ -500,6 +583,40 @@ def _remove_artifact_lines(chapter: Dict[str, Any]) -> int:
         cleaned = "\n".join(cleaned_lines)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         chapter["draft_text"] = cleaned
+    return removals
+
+
+def _remove_empty_headings(chapter: Dict[str, Any]) -> int:
+    draft_text = str(chapter.get("draft_text", "") or "")
+    if not draft_text:
+        return 0
+
+    lines = draft_text.splitlines()
+    keep_flags = [True] * len(lines)
+    removals = 0
+
+    for index, line in enumerate(lines):
+        if not MARKDOWN_HEADING_PATTERN.match(line.strip()):
+            continue
+        next_index = index + 1
+        while next_index < len(lines) and not lines[next_index].strip():
+            next_index += 1
+
+        if next_index >= len(lines):
+            keep_flags[index] = False
+            removals += 1
+            continue
+
+        next_line = lines[next_index].strip()
+        if MARKDOWN_HEADING_PATTERN.match(next_line) or re.match(r"^\s*(?:---|\*\*\*|___)\s*$", next_line):
+            keep_flags[index] = False
+            removals += 1
+
+    if removals:
+        cleaned = "\n".join(line for index, line in enumerate(lines) if keep_flags[index])
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        chapter["draft_text"] = cleaned
+
     return removals
 
 
@@ -527,6 +644,7 @@ def clean_fixable_issues(chapters: List[Dict[str, Any]]) -> Dict[str, Any]:
             "raw_visual_token_fixes": _remove_raw_visual_tokens(chapter),
             "duplicate_heading_fixes": _remove_duplicate_lead_heading(chapter),
             "artifact_line_fixes": _remove_artifact_lines(chapter),
+            "empty_heading_fixes": _remove_empty_headings(chapter),
             "reference_url_fixes": _remove_invalid_reference_urls(chapter),
         }
         chapter_fixes["total_fixes"] = (
@@ -536,6 +654,7 @@ def clean_fixable_issues(chapters: List[Dict[str, Any]]) -> Dict[str, Any]:
             + chapter_fixes["raw_visual_token_fixes"]
             + chapter_fixes["duplicate_heading_fixes"]
             + chapter_fixes["artifact_line_fixes"]
+            + chapter_fixes["empty_heading_fixes"]
             + chapter_fixes["reference_url_fixes"]
         )
         total_fixes += chapter_fixes["total_fixes"]

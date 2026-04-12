@@ -350,6 +350,9 @@ def _build_topic_profile(blueprint: Dict, topic: str, keywords: List[str]) -> Di
         [*phrase_pool, baseline_summary, *baseline_claims],
         limit=24,
     )
+    subject_anchor_terms = _meaningful_topic_terms([report_subject], limit=10)
+    if not subject_anchor_terms:
+        subject_anchor_terms = _meaningful_topic_terms([topic, source_chapter_title], limit=10)
     return {
         "topic": topic,
         "source_chapter_title": source_chapter_title,
@@ -357,6 +360,7 @@ def _build_topic_profile(blueprint: Dict, topic: str, keywords: List[str]) -> Di
         "phrases": phrase_pool,
         "priority_terms": priority_terms,
         "context_terms": context_terms,
+        "subject_anchor_terms": subject_anchor_terms,
     }
 
 
@@ -372,6 +376,10 @@ def _deterministic_topic_match(finding: Dict[str, Any], topic_profile: Dict[str,
 
     priority_hits = [token for token in topic_profile["priority_terms"] if _contains_topic_token(haystack, token)]
     context_hits = [token for token in topic_profile["context_terms"] if _contains_topic_token(haystack, token)]
+    subject_anchor_hits = [
+        token for token in topic_profile.get("subject_anchor_terms", [])
+        if _contains_topic_token(haystack, token)
+    ]
     phrase_hits = [
         phrase
         for phrase in topic_profile["phrases"]
@@ -381,13 +389,22 @@ def _deterministic_topic_match(finding: Dict[str, Any], topic_profile: Dict[str,
     score = (
         (len(priority_hits) * 1.3)
         + (len(phrase_hits) * 1.5)
+        + (len(subject_anchor_hits) * 1.6)
         + (len(context_hits) * 0.35)
         + float(finding.get("relevance_score", 0.0)) * 0.2
         + float(finding.get("source_quality", 0.0)) * 0.1
     )
 
+    passes_subject_anchor = (
+        source_type in {"uploaded", "internal"}
+        or not topic_profile.get("subject_anchor_terms")
+        or bool(subject_anchor_hits)
+    )
+
     passes = False
-    if source_type in {"uploaded", "internal"}:
+    if not passes_subject_anchor:
+        passes = False
+    elif source_type in {"uploaded", "internal"}:
         passes = True
     elif priority_hits or phrase_hits:
         passes = True
@@ -398,6 +415,8 @@ def _deterministic_topic_match(finding: Dict[str, Any], topic_profile: Dict[str,
         "priority_topic_hits": priority_hits,
         "context_topic_hits": context_hits,
         "topic_phrase_hits": phrase_hits,
+        "report_subject_hits": subject_anchor_hits,
+        "passes_subject_anchor": passes_subject_anchor,
         "deterministic_topic_score": round(score, 3),
         "passes_topic_prefilter": passes,
     }
@@ -477,11 +496,13 @@ def _apply_deterministic_approval(findings: List[Dict[str, Any]]) -> List[Dict[s
     for finding in findings:
         candidate = dict(finding)
         direct = bool(candidate.get("priority_topic_hits") or candidate.get("topic_phrase_hits"))
+        passes_subject_anchor = bool(candidate.get("passes_subject_anchor", True))
+        source_type = str(candidate.get("source_type", candidate.get("source", ""))).lower()
         candidate["llm_relevance_score"] = min(1.0, candidate.get("deterministic_topic_score", 0.0) / 4.0)
         candidate["directly_on_topic"] = direct
         candidate["background_only"] = False
         candidate["cross_domain_analogy"] = False
-        candidate["approved_for_writing"] = direct or str(candidate.get("source_type", "")).lower() in {"uploaded", "internal"}
+        candidate["approved_for_writing"] = source_type in {"uploaded", "internal"} or (direct and passes_subject_anchor)
         candidate["approval_strategy"] = "deterministic"
         approved.append(candidate)
     return approved
@@ -531,6 +552,7 @@ def _llm_rerank_findings_for_topic(
             f"  deterministic_hits: priority={','.join(finding.get('priority_topic_hits', [])) or 'none'}; "
             f"phrases={','.join(finding.get('topic_phrase_hits', [])) or 'none'}; "
             f"context={','.join(finding.get('context_topic_hits', [])[:6]) or 'none'}\n"
+            f"  report_subject_hits: {','.join(finding.get('report_subject_hits', [])) or 'none'}\n"
             f"  abstract_or_snippet: {str(finding.get('snippet', '')).strip()[:700]}"
         )
 
@@ -562,6 +584,7 @@ Baseline claims:
 
 Decision rules:
 - Keep only sources that are directly relevant to this chapter's subject and can support factual claims in the rewritten chapter.
+- A source must connect to the report subject itself, not just a neighboring application area or analogy.
 - Mark `background_only=true` for broad context or analogy sources that are not safe as primary evidence.
 - Mark `cross_domain_analogy=true` for sources from other sectors or disciplines that only resemble the topic superficially.
 - If a source is mainly about a different domain, set `keep=false`.
@@ -598,16 +621,18 @@ Candidate sources:
         cross_domain = bool(rating.get("cross_domain_analogy"))
         keep = bool(rating.get("keep"))
         source_type = str(candidate.get("source_type", candidate.get("source", "web"))).lower()
+        passes_subject_anchor = bool(candidate.get("passes_subject_anchor", True))
 
         candidate["llm_relevance_score"] = float(rating.get("relevance_score", 0.0))
         candidate["directly_on_topic"] = direct
         candidate["background_only"] = background_only
         candidate["cross_domain_analogy"] = cross_domain
+        candidate["passes_subject_anchor"] = passes_subject_anchor
         candidate["approval_strategy"] = "llm_rerank"
         candidate["relevance_reason"] = str(rating.get("reason", "")).strip()
         candidate["approved_for_writing"] = (
             source_type in {"uploaded", "internal"}
-            or (keep and direct and not background_only and not cross_domain)
+            or (keep and direct and not background_only and not cross_domain and passes_subject_anchor)
         )
         approved.append(candidate)
 

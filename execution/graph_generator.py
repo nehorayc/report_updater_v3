@@ -83,21 +83,47 @@ def _coerce_numeric_series(values, target_len: int) -> list[float]:
     return normalized
 
 
-def _should_use_static_first(visual_dict: dict) -> bool:
+def _flatten_numeric_values(labels, values) -> list[float]:
+    if not isinstance(labels, list) or not labels:
+        return []
+
+    if isinstance(values, dict):
+        flattened: list[float] = []
+        for measurement in values.values():
+            if isinstance(measurement, dict):
+                measurement = [measurement.get(label) or measurement.get(str(label), 0) for label in labels]
+            flattened.extend(_coerce_numeric_series(measurement, len(labels)))
+        return flattened
+
+    if values is None:
+        return []
+
+    return _coerce_numeric_series(values, len(labels))
+
+
+def _has_plottable_data(visual_dict: dict) -> bool:
     data = visual_dict.get("data_points", {}) or {}
     labels = data.get("labels", [])
     values = data.get("values", [])
+
+    flattened = _flatten_numeric_values(labels, values)
+    if not flattened:
+        return False
+    return any(abs(value) > 1e-9 for value in flattened)
+
+
+def _should_use_static_first(visual_dict: dict) -> bool:
+    data = visual_dict.get("data_points", {}) or {}
+    labels = data.get("labels", [])
     chart_type = str(visual_dict.get("chart_type") or "bar").lower()
 
     if chart_type not in _SUPPORTED_STATIC_CHART_TYPES:
         return False
     if not isinstance(labels, list) or not labels:
         return False
-    if isinstance(values, dict):
-        return bool(values) and chart_type in {"bar", "line"}
-    if isinstance(values, list):
-        return bool(values)
-    return values is not None
+    if not _has_plottable_data(visual_dict):
+        return False
+    return True
 
 
 def generate_graph_with_llm(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
@@ -221,7 +247,7 @@ def _generate_static_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") 
     unit = data.get("unit", "")
     chart_type = visual_dict.get("chart_type", "bar").lower()
 
-    if not labels or not values:
+    if not _has_plottable_data(visual_dict):
         logger.warning(f"Insufficient data for graph '{title}': labels={len(labels)}, values={len(values)}")
         return {"error": "No data points found for graph"}
 
@@ -315,6 +341,13 @@ def generate_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
     underspecified visuals.
     """
     logger.info(f"Starting graph generation: '{visual_dict.get('title')}'")
+
+    if not _has_plottable_data(visual_dict):
+        logger.warning(
+            "Skipping graph generation for '%s' because there are no plottable data points.",
+            visual_dict.get("title"),
+        )
+        return {"error": "No data points found for graph"}
 
     if _should_use_static_first(visual_dict):
         logger.info("Using static graph renderer first for structured chart data.")

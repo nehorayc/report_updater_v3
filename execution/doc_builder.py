@@ -18,10 +18,11 @@ CITATION_GROUP_PATTERN = re.compile(
     re.IGNORECASE,
 )
 VISUAL_MARKER_PATTERN = re.compile(
-    r'\[(?:Figure|Asset|איור|תמונה|Figura|Image):?\s*([a-zA-Z0-9]{8,32})[:\s]*.*?\]',
+    r'\[(?:Figure|Asset|איור|תמונה|Figura|Image)(?:\s+ID)?\s*:?\s*([A-Za-z0-9][A-Za-z0-9_-]{3,63})[:\s]*.*?\]',
     re.IGNORECASE,
 )
-RAW_VISUAL_TOKEN_PATTERN = re.compile(r'\[\s*visual\s*:\s*([a-zA-Z0-9]{8,32})[^\]]*\]', re.IGNORECASE)
+RAW_VISUAL_TOKEN_PATTERN = re.compile(r'\[\s*visual\s*:\s*([A-Za-z0-9][A-Za-z0-9_-]{3,63})[^\]]*\]', re.IGNORECASE)
+_AMBIGUOUS_VISUAL = object()
 
 
 def _reference_identity(ref: Dict) -> tuple:
@@ -152,6 +153,78 @@ def normalize_report_citations(chapters: List[Dict]) -> tuple[List[Dict], List[D
         normalized_chapters.append(chapter_copy)
 
     return normalized_chapters, ordered_refs
+
+
+def _normalize_marker_token(value: Any) -> str:
+    token = str(value or "").strip().lower()
+    if not token:
+        return ''
+    return re.sub(r'[^a-z0-9_-]', '', token)
+
+
+def _register_short_visual(mapping: Dict[str, Any], key: str, visual: Dict[str, Any]) -> None:
+    if not key:
+        return
+    existing = mapping.get(key)
+    if existing is None:
+        mapping[key] = visual
+    elif existing is not visual:
+        mapping[key] = _AMBIGUOUS_VISUAL
+
+
+def _build_visual_lookup(visuals: List[Dict] | None) -> Dict[str, Dict[str, Any]]:
+    exact_map: Dict[str, Dict[str, Any]] = {}
+    short_original_map: Dict[str, Any] = {}
+    short_generated_map: Dict[str, Any] = {}
+
+    for visual in visuals or []:
+        marker_id = _normalize_marker_token(visual.get('marker_id'))
+        visual_id = _normalize_marker_token(visual.get('id'))
+        original_asset_id = _normalize_marker_token(visual.get('original_asset_id'))
+
+        for token in (marker_id, visual_id, original_asset_id):
+            if token:
+                exact_map[token] = visual
+
+        if original_asset_id:
+            _register_short_visual(short_original_map, original_asset_id[:8], visual)
+        if visual_id:
+            _register_short_visual(short_generated_map, visual_id[:8], visual)
+        if marker_id:
+            _register_short_visual(short_generated_map, marker_id[:8], visual)
+
+    return {
+        'exact': exact_map,
+        'short_original': short_original_map,
+        'short_generated': short_generated_map,
+    }
+
+
+def _resolve_visual(lookup: Dict[str, Dict[str, Any]], marker_token: str) -> Dict[str, Any] | None:
+    normalized = _normalize_marker_token(marker_token)
+    if not normalized:
+        return None
+
+    exact = lookup['exact'].get(normalized)
+    if exact is not None:
+        return exact
+
+    short_token = normalized[:8]
+    for bucket_name in ('short_original', 'short_generated'):
+        candidate = lookup[bucket_name].get(short_token)
+        if candidate is _AMBIGUOUS_VISUAL:
+            return None
+        if candidate is not None:
+            return candidate
+    return None
+
+
+def _visual_export_id(visual: Dict[str, Any], fallback: str) -> str:
+    for key in ('marker_id', 'original_asset_id', 'id'):
+        token = _normalize_marker_token(visual.get(key))
+        if token:
+            return token
+    return _normalize_marker_token(fallback) or 'visual'
 
 
 def _unique_ordered(items: List[str], limit: int = 10) -> List[str]:
@@ -421,26 +494,21 @@ class ReportBuilder:
         h = self.doc.add_heading(title, level=1)
         self._set_rtl_if_hebrew(h, title)
         
-        # Mapping visuals for quick lookup — register by BOTH id and original_asset_id
-        visual_map = {}
+        visual_lookup = _build_visual_lookup(visuals)
         if visuals:
             for v in visuals:
-                # Register by 'id' key
-                vid = v.get('id', '')
-                if vid:
-                    short_id = vid[:8].lower()
-                    visual_map[short_id] = v
-                    logger.debug(f"Mapped visual (id): {short_id} -> {v.get('type')} (Path: {v.get('path')})")
-                # Also register by 'original_asset_id' key (may differ from 'id')
-                orig_id = v.get('original_asset_id', '')
-                if orig_id:
-                    short_orig = orig_id[:8].lower()
-                    visual_map[short_orig] = v
-                    logger.debug(f"Mapped visual (orig): {short_orig} -> {v.get('type')} (Path: {v.get('path')})")
+                logger.debug(
+                    "Registered visual for export: marker=%s id=%s original=%s type=%s path=%s",
+                    v.get('marker_id'),
+                    v.get('id'),
+                    v.get('original_asset_id'),
+                    v.get('type'),
+                    v.get('path'),
+                )
 
         # Strip placeholder markers (e.g. [Figure XXXXXXXX: Caption]) that the LLM
         # emits by copying the example literally — these can never be matched to a visual.
-        placeholder_regex = r'\[(?:Figure|Asset|איור|תמונה|Figura|Image):?\s*X{4,}[:\s]*.*?\]'
+        placeholder_regex = r'\[(?:Figure|Asset|איור|תמונה|Figura|Image)(?:\s+ID)?\s*:?\s*X{4,}[:\s]*.*?\]'
         text = re.sub(placeholder_regex, '', text, flags=re.IGNORECASE)
         text = RAW_VISUAL_TOKEN_PATTERN.sub('', text)
 
@@ -452,26 +520,28 @@ class ReportBuilder:
             if not line:
                 continue
                 
-            # Handle Markers first (Special case) — support 8 to 32 alphanumeric char IDs
+            # Handle visual markers first, including legacy short IDs and canonical marker IDs.
             marker_pattern = VISUAL_MARKER_PATTERN
             if marker_pattern.search(line):
                 # If we have a marker in the line, we process it specifically
                 # We use a non-capturing group for the inner elements and capture the WHOLE tag to split cleanly
-                split_pattern = r'(\[(?:Figure|Asset|איור|תמונה|Figura|Image):?\s*[a-zA-Z0-9]{8,32}[:\s]*.*?\])'
+                split_pattern = r'(\[(?:Figure|Asset|איור|תמונה|Figura|Image)(?:\s+ID)?\s*:?\s*[A-Za-z0-9][A-Za-z0-9_-]{3,63}[:\s]*.*?\])'
                 parts = re.split(split_pattern, line, flags=re.IGNORECASE)
                 p = self.doc.add_paragraph()
                 for part in parts:
                     if not part: continue
                     match = marker_pattern.match(part)
                     if match:
-                        asset_id_short = match.group(1).lower()
-                        v = visual_map.get(asset_id_short)
+                        marker_token = match.group(1)
+                        asset_id_short = _normalize_marker_token(marker_token)[:8]
+                        v = _resolve_visual(visual_lookup, marker_token)
                         img_path = v.get('path') if v else None
                         cap_text = f"Figure: {v.get('title', v.get('short_caption', 'Visual'))}" if v else f"Figure {asset_id_short}"
 
                         if v is not None and not (img_path and os.path.exists(img_path)):
                             import glob
-                            possible = glob.glob(f".tmp/**/*{asset_id_short}*.*", recursive=True)
+                            search_token = _visual_export_id(v, marker_token)
+                            possible = glob.glob(f".tmp/**/*{search_token}*.*", recursive=True)
                             for p_path in possible:
                                 if p_path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
                                     img_path = p_path
@@ -671,18 +741,10 @@ def build_markdown_report(chapters: List[Dict], output_path: str = "Modernized_R
     for ch in normalized_chapters:
         md_content.append(f"# {ch['title']}\n")
         
-        visual_map = {}
-        if ch.get('approved_visuals'):
-            for v in ch['approved_visuals']:
-                vid = v.get('id', '')
-                if vid:
-                    visual_map[vid[:8].lower()] = v
-                orig_id = v.get('original_asset_id', '')
-                if orig_id:
-                    visual_map[orig_id[:8].lower()] = v
+        visual_lookup = _build_visual_lookup(ch.get('approved_visuals', []))
         
         text = ch['draft_text']
-        placeholder_regex = r'\[(?:Figure|Asset|איור|תמונה|Figura|Image):?\s*X{4,}[:\s]*.*?\]'
+        placeholder_regex = r'\[(?:Figure|Asset|איור|תמונה|Figura|Image)(?:\s+ID)?\s*:?\s*X{4,}[:\s]*.*?\]'
         text = re.sub(placeholder_regex, '', text, flags=re.IGNORECASE)
         text = RAW_VISUAL_TOKEN_PATTERN.sub('', text)
         
@@ -695,21 +757,23 @@ def build_markdown_report(chapters: List[Dict], output_path: str = "Modernized_R
                 
             marker_pattern = VISUAL_MARKER_PATTERN
             if marker_pattern.search(line):
-                split_pattern = r'(\[(?:Figure|Asset|איור|תמונה|Figura|Image):?\s*[a-zA-Z0-9]{8,32}[:\s]*.*?\])'
+                split_pattern = r'(\[(?:Figure|Asset|איור|תמונה|Figura|Image)(?:\s+ID)?\s*:?\s*[A-Za-z0-9][A-Za-z0-9_-]{3,63}[:\s]*.*?\])'
                 parts = re.split(split_pattern, line, flags=re.IGNORECASE)
                 out_line = ""
                 for part in parts:
                     if not part: continue
                     match = marker_pattern.match(part)
                     if match:
-                        asset_id_short = match.group(1).lower()
-                        v = visual_map.get(asset_id_short)
+                        marker_token = match.group(1)
+                        asset_id_short = _normalize_marker_token(marker_token)[:8]
+                        v = _resolve_visual(visual_lookup, marker_token)
                         img_path = v.get('path') if v else None
                         cap_text = f"Figure: {v.get('title', v.get('short_caption', 'Visual'))}" if v else f"Figure {asset_id_short}"
 
                         if v is not None and not (img_path and os.path.exists(img_path)):
                             import glob
-                            possible = glob.glob(f".tmp/**/*{asset_id_short}*.*", recursive=True)
+                            search_token = _visual_export_id(v, marker_token)
+                            possible = glob.glob(f".tmp/**/*{search_token}*.*", recursive=True)
                             for p_path in possible:
                                 if p_path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
                                     img_path = p_path
@@ -720,7 +784,7 @@ def build_markdown_report(chapters: List[Dict], output_path: str = "Modernized_R
                                 img_ext = os.path.splitext(img_path)[1]
                                 if not img_ext:
                                     img_ext = ".png" # fallback
-                                dest_img_name = f"{asset_id_short}{img_ext}"
+                                dest_img_name = f"{_visual_export_id(v, marker_token)}{img_ext}"
                                 dest_img_path = os.path.join(images_dir, dest_img_name)
                                 shutil.copy2(img_path, dest_img_path)
                                 rel_path = f"images/{dest_img_name}"

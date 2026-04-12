@@ -129,6 +129,9 @@ if "quality_gate_result" not in st.session_state:
 if "last_cleanup_result" not in st.session_state:
     st.session_state.last_cleanup_result = None
 
+if "allow_finalize_with_gate_errors" not in st.session_state:
+    st.session_state.allow_finalize_with_gate_errors = False
+
 if "debug_mode" not in st.session_state:
     st.session_state.debug_mode = True
 
@@ -338,39 +341,92 @@ def _validate_report_metadata(metadata):
 def _approved_visual_short_ids(chapter):
     ids = set()
     for visual in chapter.get("approved_visuals", []):
-        for key in ("id", "original_asset_id"):
-            value = visual.get(key)
-            if value:
-                ids.add(str(value)[:8].lower())
+        ids.update(_visual_marker_keys(visual))
     return ids
 
 
+VISUAL_MARKER_PATTERN = re.compile(
+    r"\[(?:Figure|Asset|Image|Figura|איור|תמונה)(?:\s+ID)?\s*:?\s*([A-Za-z0-9][A-Za-z0-9_-]{3,63})[:\s]*.*?\]",
+    re.IGNORECASE,
+)
+RAW_VISUAL_TOKEN_PATTERN = re.compile(
+    r"\[\s*visual\s*:\s*([A-Za-z0-9][A-Za-z0-9_-]{3,63})[^\]]*\]",
+    re.IGNORECASE,
+)
+
+
+def _normalize_marker_token(value) -> str:
+    token = str(value or "").strip().lower()
+    if not token:
+        return ""
+    return re.sub(r"[^a-z0-9_-]", "", token)
+
+
+def _visual_marker_keys(visual) -> set[str]:
+    keys = set()
+    for key in ("marker_id", "id", "original_asset_id"):
+        normalized = _normalize_marker_token(visual.get(key))
+        if not normalized:
+            continue
+        keys.add(normalized)
+        if len(normalized) > 8:
+            keys.add(normalized[:8])
+    return keys
+
+
+def _canonical_visual_marker_id(visual) -> str:
+    original_asset_id = _normalize_marker_token(visual.get("original_asset_id"))
+    if original_asset_id:
+        return original_asset_id
+
+    explicit_marker_id = _normalize_marker_token(visual.get("marker_id"))
+    if explicit_marker_id:
+        return explicit_marker_id
+
+    normalized_visual_id = _normalize_marker_token(visual.get("id"))
+    if len(normalized_visual_id) >= 12:
+        return normalized_visual_id
+    if normalized_visual_id and not visual.get("original_asset_id"):
+        return uuid.uuid4().hex
+    return normalized_visual_id or uuid.uuid4().hex
+
+
+def _rewrite_visual_markers(text: str, marker_ids: set[str], canonical_marker_id: str, caption: str) -> tuple[str, int]:
+    if not text or not marker_ids or not canonical_marker_id:
+        return text, 0
+
+    replacements = 0
+    canonical_marker = f"[Figure {canonical_marker_id}: {caption}]"
+
+    def replace(match):
+        nonlocal replacements
+        marker_id = _normalize_marker_token(match.group(1))
+        if marker_id in marker_ids or marker_id[:8] in marker_ids:
+            replacements += 1
+            return canonical_marker
+        return match.group(0)
+
+    return VISUAL_MARKER_PATTERN.sub(replace, text), replacements
+
+
 def _visual_short_id(visual):
-    for key in ("id", "original_asset_id"):
-        value = visual.get(key)
-        if value:
-            return str(value)[:8].lower()
-    return ""
+    marker_id = _canonical_visual_marker_id(visual)
+    return marker_id[:8].lower()
 
 
 def _strip_unapproved_visual_markers(text: str, approved_visual_ids):
-    marker_pattern = re.compile(
-        r"\[(?:Figure|Asset|Image|Figura|איור|תמונה):?\s*([a-zA-Z0-9]{8,32})[:\s]*.*?\]",
-        re.IGNORECASE,
-    )
-
     def replace_marker(match):
-        marker_id = match.group(1)[:8].lower()
-        return match.group(0) if marker_id in approved_visual_ids else ""
+        marker_id = _normalize_marker_token(match.group(1))
+        return match.group(0) if marker_id in approved_visual_ids or marker_id[:8] in approved_visual_ids else ""
 
-    cleaned = marker_pattern.sub(replace_marker, text or "")
+    cleaned = VISUAL_MARKER_PATTERN.sub(replace_marker, text or "")
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
 def _strip_export_visual_tokens(text: str, approved_visual_ids):
     cleaned = _strip_unapproved_visual_markers(text, approved_visual_ids)
-    cleaned = re.sub(r"\[\s*visual\s*:\s*([a-zA-Z0-9]{8,32})[^\]]*\]", "", cleaned, flags=re.IGNORECASE)
+    cleaned = RAW_VISUAL_TOKEN_PATTERN.sub("", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
@@ -1259,7 +1315,8 @@ def render_draft_generation():
                     chapter['title'] = generated_title
                 
                 # --- Post-process Visuals and Markers ---
-                # Ensure IDs match DocBuilder format (8-char hex) and markers exist
+                # Normalize each visual to a stable export marker so later assembly can
+                # resolve it without relying on short-ID collisions.
                 for v in visual_suggestions:
                     # 0. Normalize type field — LLM sometimes returns variants
                     raw_type = str(v.get('type', '')).lower()
@@ -1278,29 +1335,37 @@ def render_draft_generation():
                     if 'id' not in v:
                         v['id'] = uuid.uuid4().hex
 
-                    short_id = v['id'][:8]
+                    canonical_marker_id = _canonical_visual_marker_id(v)
+                    marker_caption = v.get('title') or v.get('description', 'Figure')
+                    marker_candidates = _visual_marker_keys(v)
+                    v['marker_id'] = canonical_marker_id
 
-                    # 2. Check if a marker for this ID already exists (from new prompt instructions)
-                    marker_exists = bool(re.search(r'\[(?:Figure|Asset|איור|תמונה|Figura|Image):?\s*' + re.escape(short_id) + r'[:\s\]]', draft_text, re.IGNORECASE))
-
-                    if not marker_exists:
-                        # 3. Handle older logic or replacements
-                        ai_marker = v.get('marker_in_text')
-                        if ai_marker and ai_marker in draft_text:
-                            caption = v.get('description', 'Visual')
-                            new_marker = f"[Figure {short_id}: {caption}]"
-                            draft_text = draft_text.replace(ai_marker, new_marker)
-                            logger.info(f"Replaced marker '{ai_marker}' with '{new_marker}'")
+                    # 2. Normalize any legacy marker to the canonical export marker.
+                    ai_marker = v.get('marker_in_text')
+                    if ai_marker and ai_marker in draft_text:
+                        new_marker = f"[Figure {canonical_marker_id}: {marker_caption}]"
+                        draft_text = draft_text.replace(ai_marker, new_marker)
+                        logger.info(f"Replaced marker '{ai_marker}' with '{new_marker}'")
+                    else:
+                        draft_text, rewritten_markers = _rewrite_visual_markers(
+                            draft_text,
+                            marker_candidates,
+                            canonical_marker_id,
+                            marker_caption,
+                        )
+                        if rewritten_markers:
+                            logger.info(
+                                "Normalized %s existing visual marker(s) for '%s' to canonical id '%s'.",
+                                rewritten_markers,
+                                v.get('title'),
+                                canonical_marker_id,
+                            )
                         elif ai_marker:
-                            # Marker was specified but not found — log only, don't append
                             logger.warning(f"Marker '{ai_marker}' not found in draft text for visual '{v.get('title')}'. Visual will appear at chapter end.")
                         else:
-                            # Brand-new suggestion with no marker — inject one at end of chapter
-                            # so DocBuilder can locate and embed the visual.
-                            caption = v.get('title') or v.get('description', 'Figure')
-                            injected_marker = f"\n\n[Figure {short_id}: {caption}]\n"
+                            injected_marker = f"\n\n[Figure {canonical_marker_id}: {marker_caption}]\n"
                             draft_text += injected_marker
-                            logger.info(f"Injected new visual marker for '{v.get('title')}' (id={short_id}) at chapter end.")
+                            logger.info(f"Injected new visual marker for '{v.get('title')}' (id={canonical_marker_id}) at chapter end.")
 
                 chapter['draft_text'] = draft_text
                 chapter['executive_takeaway'] = result.get('executive_takeaway', '')
@@ -1381,6 +1446,15 @@ def render_quality_gate_results(result):
                     st.caption(f"Suggested fix: {issue['hint']}")
                 if issue.get("context"):
                     st.code(issue["context"], language="text")
+
+    if summary.get("blocking"):
+        st.checkbox(
+            "Continue to final assembly even if blocking quality gate errors remain",
+            key="allow_finalize_with_gate_errors",
+            help="This keeps the issues visible, but it stops the UI from blocking final assembly.",
+        )
+        if st.session_state.get("allow_finalize_with_gate_errors"):
+            st.warning("Final assembly will continue even if the quality gate still reports blocking errors.")
 
 
 def run_quality_gate():
@@ -1555,8 +1629,11 @@ def render_draft_verification():
                 for r_idx, r_asset in enumerate(selected_original):
                     if st.session_state.get(f"retained_{idx}_{r_idx}", True):
                         # Check it's not already being replaced by an approved update
-                        approved_orig_ids = [v.get('original_asset_id') for v in chapter['approved_visuals'] if v.get('original_asset_id')]
-                        if r_asset['id'] not in approved_orig_ids:
+                        approved_orig_ids = set()
+                        for visual in chapter['approved_visuals']:
+                            approved_orig_ids.update(_visual_marker_keys(visual))
+                        normalized_asset_id = _normalize_marker_token(r_asset['id'])
+                        if normalized_asset_id not in approved_orig_ids and normalized_asset_id[:8] not in approved_orig_ids:
                             chapter['approved_visuals'].append({
                                 "type": "image",
                                 "original_asset_id": r_asset['id'],
@@ -1574,9 +1651,16 @@ def render_draft_verification():
         quality_report = run_quality_gate()
         st.session_state.quality_gate_result = quality_report
         if has_blocking_issues(quality_report):
-            logger.warning("Blocked final assembly due to quality gate errors.")
-            _queue_ui_notice("error", _quality_gate_block_message(quality_report), source="quality_gate")
-            st.rerun()
+            if not st.session_state.get("allow_finalize_with_gate_errors"):
+                logger.warning("Blocked final assembly due to quality gate errors.")
+                _queue_ui_notice("error", _quality_gate_block_message(quality_report), source="quality_gate")
+                st.rerun()
+            logger.warning("Continuing to final assembly despite blocking quality gate errors because override is enabled.")
+            _queue_ui_notice(
+                "warning",
+                "Continuing to final assembly despite blocking quality gate errors because the override is enabled.",
+                source="quality_gate",
+            )
 
         st.session_state.current_state = STATE_FINAL_ASSEMBLY
         st.rerun()

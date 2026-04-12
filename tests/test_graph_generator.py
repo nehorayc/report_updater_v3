@@ -68,6 +68,24 @@ def test_generate_graph_returns_error_for_missing_data(monkeypatch, tmp_path: Pa
     assert result["error"] == "No data points found for graph"
 
 
+def test_generate_graph_short_circuits_all_zero_series_without_llm(monkeypatch, tmp_path: Path):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("LLM path should not be used when graph data is empty/all-zero")
+
+    monkeypatch.setattr(graph_generator, "generate_graph_with_llm", fail_if_called)
+
+    result = generate_graph(
+        {
+            "title": "All Zero Series",
+            "chart_type": "line",
+            "data_points": {"labels": ["2024", "2025", "2026"], "values": [0, 0, 0]},
+        },
+        output_dir=str(tmp_path),
+    )
+
+    assert result["error"] == "No data points found for graph"
+
+
 def test_generate_graph_handles_single_series_length_mismatch(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(graph_generator, "generate_graph_with_llm", lambda *args, **kwargs: {"error": "skip"})
 

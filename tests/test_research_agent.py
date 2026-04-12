@@ -282,6 +282,44 @@ def test_prefilter_findings_for_topic_drops_clearly_off_topic_sources():
     assert filtered[0]["title"] == "DNA data storage commercialization roadmap"
 
 
+def test_prefilter_requires_report_subject_anchor_for_generic_chapter_topics():
+    findings = [
+        {
+            "title": "Smarter eco-cities and AIoT data infrastructure",
+            "snippet": "Urban AIoT platforms improve data pipelines for smart cities and sustainability.",
+            "source": "academic",
+            "source_type": "academic",
+            "source_quality": 1.0,
+            "freshness_score": 1.0,
+            "relevance_score": 1.1,
+        },
+        {
+            "title": "DNA data storage adoption roadmap",
+            "snippet": "DNA storage adoption depends on synthesis throughput and archival demand.",
+            "source": "academic",
+            "source_type": "academic",
+            "source_quality": 1.0,
+            "freshness_score": 1.0,
+            "relevance_score": 1.1,
+        },
+    ]
+
+    filtered = research_agent._prefilter_findings_for_topic(
+        findings,
+        {
+            "topic": "Technology development and adoption",
+            "source_chapter_title": "Technology development and adoption",
+            "report_subject": "DNA digital data storage",
+            "keywords": ["adoption", "technology", "archives"],
+        },
+        "Technology development and adoption",
+        ["adoption", "technology", "archives"],
+    )
+
+    assert len(filtered) == 1
+    assert filtered[0]["title"] == "DNA data storage adoption roadmap"
+
+
 def test_llm_rerank_marks_only_direct_sources_as_approved(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("RESEARCH_RANKER_MODEL", "gemini-2.5-flash")
@@ -360,6 +398,88 @@ def test_llm_rerank_marks_only_direct_sources_as_approved(monkeypatch):
         },
         "DNA digital data storage",
         ["DNA storage", "archival storage"],
+    )
+
+    approved = [item for item in reranked if item.get("approved_for_writing")]
+    assert len(approved) == 1
+    assert approved[0]["title"] == "DNA data storage commercialization roadmap"
+
+
+def test_llm_rerank_keeps_report_subject_anchor_requirement(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("RESEARCH_RANKER_MODEL", "gemini-2.5-flash")
+
+    class FakeResponse:
+        text = """
+        {
+          "sources": [
+            {
+              "id": "1",
+              "relevance_score": 0.95,
+              "directly_on_topic": true,
+              "background_only": false,
+              "cross_domain_analogy": false,
+              "keep": true,
+              "reason": "Direct DNA storage source."
+            },
+            {
+              "id": "2",
+              "relevance_score": 0.91,
+              "directly_on_topic": true,
+              "background_only": false,
+              "cross_domain_analogy": false,
+              "keep": true,
+              "reason": "Looks relevant to adoption."
+            }
+          ]
+        }
+        """
+
+    monkeypatch.setattr(research_agent, "gemini_generate_content", lambda **kwargs: FakeResponse())
+
+    reranked = research_agent._llm_rerank_findings_for_topic(
+        [
+            {
+                "title": "DNA data storage commercialization roadmap",
+                "snippet": "DNA storage systems are moving toward archival deployment.",
+                "source": "academic",
+                "source_type": "academic",
+                "source_quality": 1.0,
+                "freshness_score": 1.0,
+                "relevance_score": 1.2,
+                "priority_topic_hits": ["dna", "storage"],
+                "topic_phrase_hits": ["DNA digital data storage"],
+                "context_topic_hits": ["adoption"],
+                "report_subject_hits": ["dna", "storage"],
+                "passes_subject_anchor": True,
+                "deterministic_topic_score": 4.2,
+                "passes_topic_prefilter": True,
+            },
+            {
+                "title": "Smarter eco-cities and AIoT data infrastructure",
+                "snippet": "Smart-city platforms improve data infrastructure and urban AI deployment.",
+                "source": "academic",
+                "source_type": "academic",
+                "source_quality": 1.0,
+                "freshness_score": 1.0,
+                "relevance_score": 1.1,
+                "priority_topic_hits": ["adoption"],
+                "topic_phrase_hits": [],
+                "context_topic_hits": ["technology", "adoption"],
+                "report_subject_hits": [],
+                "passes_subject_anchor": False,
+                "deterministic_topic_score": 2.0,
+                "passes_topic_prefilter": True,
+            },
+        ],
+        {
+            "topic": "Technology development and adoption",
+            "source_chapter_title": "Technology development and adoption",
+            "report_subject": "DNA digital data storage",
+            "keywords": ["adoption", "technology", "archives"],
+        },
+        "Technology development and adoption",
+        ["adoption", "technology", "archives"],
     )
 
     approved = [item for item in reranked if item.get("approved_for_writing")]

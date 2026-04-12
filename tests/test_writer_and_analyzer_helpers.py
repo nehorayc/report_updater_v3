@@ -4,6 +4,7 @@ import chapter_analyzer
 import writer_agent
 from chapter_analyzer import _fallback_analysis, analyze_chapter_content, analyze_chapters_batch
 from writer_agent import (
+    _clean_generated_chapter_text,
     _normalize_inline_citations,
     _normalize_references,
     _reshape_bullet_heavy_text,
@@ -342,6 +343,48 @@ def test_normalize_references_maps_explicit_original_reference_tokens():
     assert normalized_text == "Fresh claim [1]. Historical framing [2]."
 
 
+def test_normalize_references_keeps_uploaded_titles_even_when_the_writer_paraphrases_them():
+    research_findings = [
+        {
+            "title": "reference.txt",
+            "source_type": "uploaded",
+            "source_credible": True,
+        },
+        {
+            "title": "Recent Study",
+            "url": "https://example.com/study",
+            "source_type": "academic",
+            "source_credible": True,
+        },
+    ]
+    references = [
+        {
+            "index": 1,
+            "title": "Recent Study",
+            "url": "https://example.com/study",
+            "category": "Academic",
+        },
+        {
+            "index": 7,
+            "title": "reference.txt (Regulation and governance in 2025)",
+            "category": "Uploaded",
+        },
+    ]
+
+    normalized_refs, citation_map = _normalize_references(
+        references,
+        research_findings,
+        include_original_reference=False,
+        edition_title="Enterprise AI Update",
+        original_report_date="2023-01-01",
+    )
+
+    assert [ref["index"] for ref in normalized_refs] == [1, 2]
+    assert normalized_refs[1]["category"] == "Uploaded"
+    normalized_text = _normalize_inline_citations("Governance update [7].", citation_map)
+    assert normalized_text == "Governance update [2]."
+
+
 def test_outline_and_bullet_shaping_helpers_reduce_outline_noise():
     outline_text = "1. Intro\n2. Data\n3. Risks\n4. Outlook"
     softened = _soften_outline_structure(outline_text)
@@ -359,6 +402,24 @@ def test_outline_and_bullet_shaping_helpers_reduce_outline_noise():
     reshaped = _reshape_bullet_heavy_text(bullet_text)
     assert "### Trend" in reshaped
     assert "- " not in reshaped
+
+
+def test_clean_generated_chapter_text_removes_artifact_headings_and_empty_heading_ladders():
+    dirty = (
+        "### Area boxes. •\n\n"
+        "### Innovators\n\n"
+        "### Early Adopters\n\n"
+        "### Late Majority\n"
+        "15+ years\n"
+    )
+
+    cleaned = _clean_generated_chapter_text(dirty, "Outlook")
+
+    assert "Area boxes" not in cleaned
+    assert "### Innovators" not in cleaned
+    assert "### Early Adopters" not in cleaned
+    assert "### Late Majority" in cleaned
+    assert "15+ years" in cleaned
 
 
 def test_write_chapter_uses_configured_writer_model(monkeypatch):
@@ -431,3 +492,75 @@ def test_write_chapter_uses_configured_writer_model(monkeypatch):
     )
 
     assert result["chapter_title"] == "Configured Model Chapter"
+
+
+def test_write_chapter_links_update_visuals_to_original_assets(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("WRITER_MODEL", "gemini-3-flash-preview")
+
+    class FakeResponse:
+        text = """
+        {
+          "chapter_title": "Quantitative Analysis",
+          "executive_takeaway": "A concise summary.",
+          "retained_claims": ["Claim still holds"],
+          "updated_claims": ["Claim updated"],
+          "new_claims": ["New claim"],
+          "open_questions": [],
+          "text_content": "### Area boxes. •\\n\\n[Figure ID: deadbeef111111111111111111111111]\\n\\n### Innovators\\n\\n### Late Majority\\n15+ years\\n\\nEvidence-backed update [1].",
+          "visual_suggestions": [
+            {
+              "id": "deadbeef111111111111111111111111",
+              "action": "update",
+              "type": "graph",
+              "title": "Updated chart",
+              "description": "Shows the revised data",
+              "chart_type": "line",
+              "data_points": {"labels": ["2024", "2025"], "values": [10, 12], "unit": "Count"}
+            }
+          ],
+          "references": [
+            {"index": 1, "title": "Relevant Source", "url": "https://example.com/relevant", "category": "Web"}
+          ]
+        }
+        """
+
+    monkeypatch.setattr(writer_agent, "gemini_generate_content", lambda **kwargs: FakeResponse())
+
+    result = writer_agent.write_chapter(
+        original_text="Original chapter text.",
+        research_findings=[
+            {
+                "title": "Relevant Source",
+                "url": "https://example.com/relevant",
+                "snippet": "Relevant evidence for the chapter.",
+                "source": "web",
+                "source_type": "web",
+                "directly_on_topic": True,
+                "approved_for_writing": True,
+                "passes_subject_anchor": True,
+            }
+        ],
+        blueprint={
+            "topic": "Quantitative Analysis",
+            "source_chapter_title": "Quantitative Analysis",
+            "report_subject": "DNA digital data storage",
+            "original_report_date": "2023-01-01",
+            "update_start_date": "2024-01-01",
+            "update_end_date": "2026-03-22",
+        },
+        assets_to_update=[
+            {
+                "id": "deadbeef111111111111111111111111",
+                "type": "graph",
+                "short_caption": "Original chart",
+                "description": "Original chart description",
+            }
+        ],
+    )
+
+    assert result["visual_suggestions"][0]["original_asset_id"] == "deadbeef111111111111111111111111"
+    assert result["visual_suggestions"][0]["action"] == "update"
+    assert "Area boxes" not in result["text_content"]
+    assert "### Innovators" not in result["text_content"]
+    assert "### Late Majority" in result["text_content"]

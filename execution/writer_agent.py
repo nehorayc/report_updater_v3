@@ -93,6 +93,13 @@ def _normalize_list(value: Any, limit: int = 8) -> List[str]:
     return cleaned
 
 
+def _normalize_marker_token(value: Any) -> str:
+    token = str(value or "").strip().lower()
+    if not token:
+        return ""
+    return re.sub(r"[^a-z0-9_-]", "", token)
+
+
 def _infer_text_language(text: str) -> str:
     return "Hebrew" if re.search(r"[\u0590-\u05FF]", text or "") else "English"
 
@@ -305,6 +312,88 @@ def _remove_duplicate_lead_heading(text: str, chapter_title: str) -> str:
     return text
 
 
+def _looks_like_artifact_heading(line: str) -> bool:
+    match = MARKDOWN_HEADING_PATTERN.match(str(line or "").strip())
+    if not match:
+        return False
+    heading = re.sub(r"\s+", " ", match.group(1)).strip()
+    lowered = heading.lower()
+    if not heading:
+        return True
+    if PRIVATE_USE_PATTERN.search(heading):
+        return True
+    if "area boxes" in lowered:
+        return True
+    if heading.endswith("•") or heading.endswith("·"):
+        return True
+    return False
+
+
+def _remove_artifact_headings(text: str) -> str:
+    if not text:
+        return text
+
+    kept_lines: List[str] = []
+    changed = False
+    for line in text.splitlines():
+        if _looks_like_artifact_heading(line):
+            changed = True
+            continue
+        kept_lines.append(line.rstrip())
+
+    if not changed:
+        return text
+
+    cleaned = "\n".join(kept_lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
+def _remove_empty_headings(text: str) -> str:
+    if not text:
+        return text
+
+    lines = text.splitlines()
+    keep_flags = [True] * len(lines)
+    changed = False
+
+    for index, line in enumerate(lines):
+        if not MARKDOWN_HEADING_PATTERN.match(line.strip()):
+            continue
+
+        next_index = index + 1
+        while next_index < len(lines) and not lines[next_index].strip():
+            next_index += 1
+
+        if next_index >= len(lines):
+            keep_flags[index] = False
+            changed = True
+            continue
+
+        next_line = lines[next_index].strip()
+        if MARKDOWN_HEADING_PATTERN.match(next_line) or re.match(r"^\s*(?:---|\*\*\*|___)\s*$", next_line):
+            keep_flags[index] = False
+            changed = True
+
+    if not changed:
+        return text
+
+    cleaned = "\n".join(line for index, line in enumerate(lines) if keep_flags[index])
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
+def _clean_generated_chapter_text(text: str, chapter_title: str) -> str:
+    cleaned = _sanitize_source_text(text)
+    cleaned = _soften_outline_structure(cleaned)
+    cleaned = _reshape_bullet_heavy_text(cleaned)
+    cleaned = _remove_artifact_headings(cleaned)
+    cleaned = _remove_empty_headings(cleaned)
+    cleaned = _sanitize_source_text(cleaned)
+    cleaned = _remove_duplicate_lead_heading(cleaned, chapter_title)
+    return cleaned
+
+
 def _normalize_reference_category(raw_category: Any, source_hint: Any = None) -> str:
     category = str(raw_category or "").strip().lower()
     source_hint = str(source_hint or "").strip().lower()
@@ -380,8 +469,6 @@ def _normalize_references(
             if category == "Web" and not url and normalized_title not in credible_titles_by_category.get("web", set()):
                 continue
             if category == "Academic" and not url and normalized_title not in credible_titles_by_category.get("academic", set()):
-                continue
-            if category == "Uploaded" and normalized_title not in credible_titles_by_category.get("uploaded", set()):
                 continue
             key = (title.lower(), url.lower(), category.lower())
             normalized_index = ref_positions.get(key)
@@ -481,6 +568,80 @@ def _writer_model_name() -> str:
     return os.getenv("WRITER_MODEL", _DEFAULT_WRITER_MODEL).strip() or _DEFAULT_WRITER_MODEL
 
 
+def _filter_research_findings_for_writer(research_findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    strict: List[Dict[str, Any]] = []
+    fallback: List[Dict[str, Any]] = []
+
+    for finding in research_findings:
+        source_type = str(finding.get("source_type") or finding.get("source") or "").lower()
+        approved = bool(finding.get("approved_for_writing", True))
+        direct = bool(finding.get("directly_on_topic", True))
+        background_only = bool(finding.get("background_only"))
+        cross_domain = bool(finding.get("cross_domain_analogy"))
+        passes_subject_anchor = bool(finding.get("passes_subject_anchor", True))
+
+        if source_type in {"uploaded", "internal", "original"}:
+            strict.append(finding)
+            fallback.append(finding)
+            continue
+
+        if approved:
+            fallback.append(finding)
+
+        if approved and direct and not background_only and not cross_domain and passes_subject_anchor:
+            strict.append(finding)
+
+    if strict:
+        return strict[:12]
+    if fallback:
+        return fallback[:12]
+    return research_findings[:12]
+
+
+def _link_visual_updates_to_original_assets(
+    visual_suggestions: List[Dict[str, Any]],
+    assets_to_update: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    if not visual_suggestions or not assets_to_update:
+        return visual_suggestions
+
+    asset_lookup: Dict[str, Dict[str, Any]] = {}
+    for asset in assets_to_update:
+        asset_id = _normalize_marker_token(asset.get("id"))
+        if asset_id:
+            asset_lookup[asset_id] = asset
+
+    if not asset_lookup:
+        return visual_suggestions
+
+    if len(asset_lookup) == 1:
+        default_asset = next(iter(asset_lookup.values()))
+    else:
+        default_asset = None
+
+    linked: List[Dict[str, Any]] = []
+    for visual in visual_suggestions:
+        if not isinstance(visual, dict):
+            linked.append(visual)
+            continue
+
+        candidate_id = _normalize_marker_token(
+            visual.get("original_asset_id") or visual.get("marker_id") or visual.get("id")
+        )
+        matched_asset = asset_lookup.get(candidate_id)
+        if matched_asset is None and str(visual.get("action", "")).strip().lower() == "update":
+            matched_asset = default_asset
+
+        if matched_asset:
+            visual.setdefault("id", matched_asset.get("id"))
+            visual["original_asset_id"] = matched_asset.get("id")
+            visual["action"] = "update"
+
+        linked.append(visual)
+
+    return linked
+
+
 def write_chapter(
     original_text: str,
     research_findings: List[Dict],
@@ -503,9 +664,10 @@ def write_chapter(
 
     assets_to_update = assets_to_update or []
     prior_chapter_context = prior_chapter_context or []
+    writer_findings = _filter_research_findings_for_writer(research_findings)
 
-    findings_str = _stringify_findings(research_findings)
-    evidence_snapshot = _build_evidence_snapshot(research_findings)
+    findings_str = _stringify_findings(writer_findings)
+    evidence_snapshot = _build_evidence_snapshot(writer_findings)
     baseline_summary = blueprint.get("baseline_summary", "")
     baseline_claims = "\n".join(f"- {claim}" for claim in blueprint.get("baseline_claims", []))
     original_report_date = blueprint.get("original_report_date", "Unknown")
@@ -627,6 +789,7 @@ CRITICAL WRITING RULES:
 - Prefer exact years, dates, organizations, model names, products, laws, datasets, and figures over generic wording.
 - Do not invent statistics, organizations, or URLs. If a detail is uncertain, state the uncertainty instead of guessing.
 - Do NOT write phrases like "this updated edition", "this section was updated", "align with the specified user objective", "diverging from the original report's focus", "compared to the previous edition", or "in the old report".
+- Do NOT mention internal workflow roles or machinery such as "Analyst Agent", "Writer Agent", "research pipeline", "quality gate", or similar implementation terms.
 - Do NOT flatten conflicting evidence. If the evidence is mixed, state that clearly and professionally.
 - Do not replace the source chapter structure with a generic template like "current state / implications / near-term outlook" unless the source chapter truly has no usable structure.
 - Prefer report prose with restrained subsection headers. Avoid memo-style numbering like 1., 2., a., b., or א., ב.. Avoid turning the chapter into a bullet-heavy answer.
@@ -647,7 +810,7 @@ CRITICAL - VISUAL MARKERS:
 - You MUST preserve those existing markers in the appropriate context within your 'text_content'.
 - If you are UPDATING or RECREATING an existing visual, insert a marker using ONLY the real ID provided in the update instructions above.
 - Do NOT use placeholder text like "XXXXXXXX".
-- For BRAND-NEW visual suggestions, invent a random 8-character hex ID for each one.
+- For BRAND-NEW visual suggestions, include an ID for each one. The system may later normalize that marker ID for export, so uniqueness matters more than format.
 - For EVERY visual in the 'visual_suggestions' list, include its 'id' field.
 - For EVERY recreated/updated visual in the 'visual_suggestions' list, include an "action": "update" field.
 
@@ -747,18 +910,20 @@ OUTPUT FORMAT (MANDATORY JSON):
         uses_original_marker = bool(re.search(r"\[\s*Original(?:\s+Report)?\s*\]", normalized.get("text_content", ""), re.IGNORECASE))
         normalized_references, citation_map = _normalize_references(
             parsed.get("references", []),
-            research_findings,
+            writer_findings,
             include_original_reference=bool(normalized["retained_claims"]) or uses_original_marker,
             edition_title=edition_title or blueprint.get("topic", "Original report"),
             original_report_date=original_report_date,
         )
         normalized["references"] = normalized_references
         normalized["text_content"] = _normalize_inline_citations(normalized.get("text_content", ""), citation_map)
-        normalized["text_content"] = _soften_outline_structure(normalized.get("text_content", ""))
-        normalized["text_content"] = _reshape_bullet_heavy_text(normalized.get("text_content", ""))
-        normalized["text_content"] = _remove_duplicate_lead_heading(
+        normalized["text_content"] = _clean_generated_chapter_text(
             normalized.get("text_content", ""),
             normalized.get("chapter_title", ""),
+        )
+        normalized["visual_suggestions"] = _link_visual_updates_to_original_assets(
+            normalized.get("visual_suggestions", []),
+            assets_to_update,
         )
         logger.info(f"Successfully generated chapter. Text length: {len(normalized.get('text_content', ''))}")
         return normalized
