@@ -1,0 +1,10 @@
+{
+  "title": "Enterprise AI Server Shipments by Year",
+  "chart_type": "bar",
+  "description": "Baseline source graph used for graph updater tests. This chart intentionally stops at 2023 so the updater must extend it with recent data.",
+  "data_points": {
+    "labels": ["2020", "2021", "2022", "2023"],
+    "values": [42, 58, 79, 101],
+    "unit": "Thousand Units"
+  }
+}

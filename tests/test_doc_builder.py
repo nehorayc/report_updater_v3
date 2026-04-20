@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import zipfile
 from pathlib import Path
 
-from doc_builder import build_final_report, build_markdown_report, normalize_report_citations
+import pytest
+
+from doc_builder import ExportValidationError, build_final_report, build_markdown_report, normalize_report_citations
 from PIL import Image
 
 
@@ -201,3 +204,178 @@ def test_export_resolves_exact_marker_ids_before_short_alias_collisions(tmp_path
     assert "Generated Graph" in document_xml
     assert "Original Visual" in document_xml
     assert len(media_members) == 2
+
+
+def test_exports_emit_visual_manifests(tmp_path: Path, report_metadata, sample_visual):
+    chapter = {
+        "title": "Manifest Chapter",
+        "draft_text": "[Figure abcdef12: Dummy Visual]",
+        "approved_visuals": [sample_visual],
+        "references": [],
+    }
+
+    markdown_zip = build_markdown_report(
+        [chapter],
+        output_path=str(tmp_path / "manifest.md"),
+        title="Manifest Report",
+        report_metadata=report_metadata,
+    )
+    with zipfile.ZipFile(markdown_zip) as archive:
+        manifest = json.loads(archive.read("visual_manifest.json").decode("utf-8"))
+
+    assert len(manifest) == 1
+    assert manifest[0]["caption"] == "Dummy Visual"
+    assert manifest[0]["content_hash"]
+    assert manifest[0]["text_reference_count"] == 1
+
+    docx_path = build_final_report(
+        [chapter],
+        output_path=str(tmp_path / "manifest.docx"),
+        title="Manifest Report",
+        report_metadata=report_metadata,
+    )
+    manifest_path = Path(docx_path).with_name("manifest_visual_manifest.json")
+    assert manifest_path.exists()
+    docx_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert docx_manifest[0]["caption"] == "Dummy Visual"
+
+
+def test_export_blocks_when_citation_normalization_would_drop_tokens(tmp_path: Path, report_metadata):
+    chapter = {
+        "title": "Broken Citations",
+        "draft_text": "Updated claim [2].",
+        "approved_visuals": [],
+        "references": [
+            {"index": 1, "title": "Only Source", "url": "https://example.com/source", "category": "Web"}
+        ],
+    }
+
+    with pytest.raises(ExportValidationError, match="citation normalization would drop unresolved tokens"):
+        build_markdown_report(
+            [chapter],
+            output_path=str(tmp_path / "broken.md"),
+            title="Broken Report",
+            report_metadata=report_metadata,
+        )
+
+
+def test_export_rejects_accidental_duplicate_visual_content_under_different_captions(
+    tmp_path: Path,
+    report_metadata,
+    dummy_image_path: Path,
+):
+    chapter = {
+        "title": "Duplicate Visuals",
+        "draft_text": (
+            "[Figure visualaa11: Adoption Curve]\n\n"
+            "[Figure visualbb22: Lifecycle Diagram]"
+        ),
+        "approved_visuals": [
+            {
+                "id": "visualaa1111111111",
+                "marker_id": "visualaa1111111111",
+                "type": "image",
+                "path": str(dummy_image_path),
+                "title": "Adoption Curve",
+                "short_caption": "Adoption Curve",
+            },
+            {
+                "id": "visualbb2222222222",
+                "marker_id": "visualbb2222222222",
+                "type": "image",
+                "path": str(dummy_image_path),
+                "title": "Lifecycle Diagram",
+                "short_caption": "Lifecycle Diagram",
+            },
+        ],
+        "references": [],
+    }
+
+    with pytest.raises(ExportValidationError, match="Accidental duplicate visual content detected"):
+        build_markdown_report(
+            [chapter],
+            output_path=str(tmp_path / "dupe.md"),
+            title="Duplicate Report",
+            report_metadata=report_metadata,
+        )
+
+
+def test_export_allows_explicit_visual_reuse_with_metadata(
+    tmp_path: Path,
+    report_metadata,
+    dummy_image_path: Path,
+):
+    chapter = {
+        "title": "Reused Visuals",
+        "draft_text": (
+            "[Figure visualaa11: Adoption Curve]\n\n"
+            "[Figure visualbb22: Adoption Curve (repeat)]"
+        ),
+        "approved_visuals": [
+            {
+                "id": "visualaa1111111111",
+                "marker_id": "visualaa1111111111",
+                "type": "image",
+                "path": str(dummy_image_path),
+                "title": "Adoption Curve",
+                "short_caption": "Adoption Curve",
+                "source_asset_id": "visualaa1111111111",
+            },
+            {
+                "id": "visualbb2222222222",
+                "marker_id": "visualbb2222222222",
+                "type": "image",
+                "path": str(dummy_image_path),
+                "title": "Adoption Curve (repeat)",
+                "short_caption": "Adoption Curve (repeat)",
+                "source_asset_id": "visualaa1111111111",
+                "reuse_of_asset_id": "visualaa1111111111",
+                "reuse_reason": "executive summary repeat",
+                "is_reused_visual": True,
+            },
+        ],
+        "references": [],
+    }
+
+    markdown_zip = build_markdown_report(
+        [chapter],
+        output_path=str(tmp_path / "reuse.md"),
+        title="Reuse Report",
+        report_metadata=report_metadata,
+    )
+
+    with zipfile.ZipFile(markdown_zip) as archive:
+        manifest = json.loads(archive.read("visual_manifest.json").decode("utf-8"))
+
+    assert len(manifest) == 2
+    assert manifest[1]["is_reused_visual"] is True
+    assert manifest[1]["reuse_of_asset_id"] == "visualaa1111111111"
+
+
+def test_best_effort_markdown_export_continues_with_warnings(tmp_path: Path, report_metadata):
+    chapter = {
+        "title": "Best Effort Chapter",
+        "draft_text": (
+            "Updated claim [2].\n\n"
+            "[Figure badc0ffe1111: Missing visual]"
+        ),
+        "approved_visuals": [],
+        "references": [
+            {"index": 1, "title": "Only Source", "url": "https://example.com/source", "category": "Web"}
+        ],
+    }
+
+    warnings: list[str] = []
+    markdown_zip = build_markdown_report(
+        [chapter],
+        output_path=str(tmp_path / "best-effort.md"),
+        title="Best Effort Report",
+        report_metadata=report_metadata,
+        strict=False,
+        export_warnings=warnings,
+    )
+
+    assert Path(markdown_zip).exists()
+    assert warnings
+    assert any("Citation normalization dropped unresolved tokens" in warning for warning in warnings)
+    assert any("Best-effort Markdown export continued with visual issues" in warning for warning in warnings)

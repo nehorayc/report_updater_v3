@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 import time
@@ -54,6 +55,11 @@ _DEFAULT_RETRY_JITTER = 1.0
 _DEFAULT_MAX_CONCURRENT_REQUESTS = 1
 _DEFAULT_MIN_INTERVAL_SECONDS = 1.0
 _REQUEST_SLOT_POLL_INTERVAL_SECONDS = 0.05
+_FLASH3_HIGH_DEMAND_FALLBACK_MODEL = "gemini-2.5-flash"
+_FLASH25_HIGH_DEMAND_FALLBACK_MODEL = "gemini-2.0-flash"
+
+
+logger = logging.getLogger(__name__)
 
 
 # Shared gate for all Gemini calls in this Python process. This lets us smooth
@@ -212,6 +218,105 @@ def _build_config(
     return generation_config or None
 
 
+def _is_flash3_model(model: str) -> bool:
+    normalized = str(model or "").lower()
+    return "flash" in normalized and "gemini-3" in normalized
+
+
+def _is_flash25_model(model: str) -> bool:
+    normalized = str(model or "").lower()
+    return "flash" in normalized and "gemini-2.5" in normalized
+
+
+def _is_high_demand_503(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "503" in message and "high demand" in message
+
+
+def _fallback_env_value(name: str, default: str) -> str:
+    return os.getenv(name, default).strip() or default
+
+
+def _get_high_demand_fallback_model(model: str, exc: Exception) -> str | None:
+    if not _is_high_demand_503(exc):
+        return None
+
+    if _is_flash3_model(model):
+        fallback = _fallback_env_value(
+            "GEMINI_FLASH3_HIGH_DEMAND_FALLBACK_MODEL",
+            _FLASH3_HIGH_DEMAND_FALLBACK_MODEL,
+        )
+    elif _is_flash25_model(model):
+        fallback = _fallback_env_value(
+            "GEMINI_FLASH25_HIGH_DEMAND_FALLBACK_MODEL",
+            _FLASH25_HIGH_DEMAND_FALLBACK_MODEL,
+        )
+    else:
+        return None
+
+    if fallback == model:
+        return None
+    return fallback
+
+
+def _generate_modern_content_with_fallbacks(
+    *,
+    client: Any,
+    model: str,
+    contents: Any,
+    config: Any,
+) -> Any:
+    attempted_models = {model}
+    current_model = model
+
+    while True:
+        try:
+            return client.models.generate_content(
+                model=current_model,
+                contents=contents,
+                config=config,
+            )
+        except Exception as exc:
+            fallback_model = _get_high_demand_fallback_model(current_model, exc)
+            if not fallback_model or fallback_model in attempted_models:
+                raise
+            logger.warning(
+                "Gemini model %s returned 503 high demand; retrying with %s.",
+                current_model,
+                fallback_model,
+            )
+            attempted_models.add(fallback_model)
+            current_model = fallback_model
+
+
+def _generate_legacy_content_with_fallbacks(
+    *,
+    model: str,
+    contents: Any,
+    config: Any,
+) -> Any:
+    attempted_models = {model}
+    current_model = model
+
+    while True:
+        model_client = _legacy_genai.GenerativeModel(current_model)
+        try:
+            if config is None:
+                return model_client.generate_content(contents)
+            return model_client.generate_content(contents, generation_config=config)
+        except Exception as exc:
+            fallback_model = _get_high_demand_fallback_model(current_model, exc)
+            if not fallback_model or fallback_model in attempted_models:
+                raise
+            logger.warning(
+                "Gemini model %s returned 503 high demand; retrying with %s.",
+                current_model,
+                fallback_model,
+            )
+            attempted_models.add(fallback_model)
+            current_model = fallback_model
+
+
 def generate_content(
     *,
     api_key: str,
@@ -227,23 +332,27 @@ def generate_content(
                 api_key=api_key,
                 http_options=_build_http_options(),
             )
-            return client.models.generate_content(
+            normalized_contents = _normalize_contents(contents)
+            config = _build_config(
+                response_mime_type=response_mime_type,
+                temperature=temperature,
+            )
+            return _generate_modern_content_with_fallbacks(
+                client=client,
                 model=model,
-                contents=_normalize_contents(contents),
-                config=_build_config(
-                    response_mime_type=response_mime_type,
-                    temperature=temperature,
-                ),
+                contents=normalized_contents,
+                config=config,
             )
 
         _legacy_genai.configure(api_key=api_key)
-        model_client = _legacy_genai.GenerativeModel(model)
         config = _build_config(
             response_mime_type=response_mime_type,
             temperature=temperature,
         )
-        if config is None:
-            return model_client.generate_content(contents)
-        return model_client.generate_content(contents, generation_config=config)
+        return _generate_legacy_content_with_fallbacks(
+            model=model,
+            contents=contents,
+            config=config,
+        )
     finally:
         _release_request_slot()

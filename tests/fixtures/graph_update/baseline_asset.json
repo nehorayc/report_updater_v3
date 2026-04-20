@@ -1,0 +1,12 @@
+{
+  "id": "feed2023aa1111111111111111111111",
+  "type": "graph",
+  "path": "tests/fixtures/graph_update/enterprise_ai_server_shipments_2020_2023.png",
+  "short_caption": "Enterprise AI server shipments by year",
+  "description": "Original extracted graph asset showing annual enterprise AI server shipments from 2020 through 2023 only.",
+  "dataset_description": "Bar chart with yearly shipment totals for 2020, 2021, 2022, and 2023. The updater should replace this with a graph extended through 2026.",
+  "do_update": true,
+  "update_query": "enterprise AI server shipments 2024 2025 2026",
+  "baseline_years": [2020, 2021, 2022, 2023],
+  "expected_updated_years": [2024, 2025, 2026]
+}

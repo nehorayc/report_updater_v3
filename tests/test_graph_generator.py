@@ -54,6 +54,28 @@ def test_generate_graph_handles_multi_series_and_nested_dicts(monkeypatch, tmp_p
     assert Path(result["path"]).exists()
 
 
+def test_generate_graph_handles_dataset_style_series(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(graph_generator, "generate_graph_with_llm", lambda *args, **kwargs: {"error": "skip"})
+
+    result = generate_graph(
+        {
+            "title": "Dataset Style",
+            "chart_type": "line",
+            "data_points": {
+                "labels": ["2024", "2025", "2026"],
+                "datasets": [
+                    {"label": "Articles", "values": [120, 155, 190], "unit": "Count"},
+                    {"label": "Patents", "data": [14, 19, 28], "unit": "Count"},
+                ],
+            },
+        },
+        output_dir=str(tmp_path),
+    )
+
+    assert "path" in result
+    assert Path(result["path"]).exists()
+
+
 def test_generate_graph_returns_error_for_missing_data(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(graph_generator, "generate_graph_with_llm", lambda *args, **kwargs: {"error": "skip"})
 
@@ -162,3 +184,58 @@ def test_generate_graph_uses_llm_first_for_complex_chart(monkeypatch, tmp_path: 
 
     assert calls["llm"] == 1
     assert result["path"] == str(llm_path)
+
+
+def test_generate_graph_rejects_update_graphs_with_history_drift_or_missing_end_year(monkeypatch, tmp_path: Path):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("Renderer should not run when update-graph validation already failed")
+
+    monkeypatch.setattr(graph_generator, "generate_graph_with_llm", fail_if_called)
+
+    result = generate_graph(
+        {
+            "title": "Invalid Updated Graph",
+            "type": "graph",
+            "chart_type": "bar",
+            "original_asset_id": "feed2023aa1111111111111111111111",
+            "update_end_date": "2026-03-22",
+            "extracted_data_points": {
+                "labels": ["2020", "2021", "2022", "2023"],
+                "values": [42, 58, 79, 101],
+                "unit": "Thousand Units",
+            },
+            "data_points": {
+                "labels": ["2020", "2021", "2022", "2023", "2024", "2025"],
+                "values": [45, 58, 79, 101, 120, 185],
+                "unit": "Thousand Units",
+            },
+        },
+        output_dir=str(tmp_path),
+    )
+
+    assert "error" in result
+    assert "Graph update validation failed" in result["error"]
+
+
+def test_generate_graph_uses_log_scale_variant_without_llm(monkeypatch, tmp_path: Path):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("LLM path should not be used for static log-scale graphs")
+
+    monkeypatch.setattr(graph_generator, "generate_graph_with_llm", fail_if_called)
+
+    result = generate_graph(
+        {
+            "title": "Extreme Ratio",
+            "chart_type": "bar",
+            "y_axis_scale": "log",
+            "data_points": {
+                "labels": ["Synthetic DNA", "LTO-9 Tape"],
+                "values": [215000000, 45],
+                "unit": "TB per gram",
+            },
+        },
+        output_dir=str(tmp_path),
+    )
+
+    assert "path" in result
+    assert Path(result["path"]).exists()

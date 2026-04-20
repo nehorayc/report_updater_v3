@@ -564,3 +564,161 @@ def test_write_chapter_links_update_visuals_to_original_assets(monkeypatch):
     assert "Area boxes" not in result["text_content"]
     assert "### Innovators" not in result["text_content"]
     assert "### Late Majority" in result["text_content"]
+
+
+def test_write_chapter_includes_graphable_questions_in_prompt(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("WRITER_MODEL", "gemini-3-flash-preview")
+
+    class FakeResponse:
+        text = """
+        {
+          "chapter_title": "Quantitative Analysis",
+          "executive_takeaway": "A concise summary.",
+          "retained_claims": ["Claim still holds"],
+          "updated_claims": ["Claim updated"],
+          "new_claims": ["New claim"],
+          "open_questions": [],
+          "text_content": "Evidence-backed update [1].",
+          "visual_suggestions": [
+            {
+              "id": "deadbeef111111111111111111111111",
+              "graph_question_id": "gq_1",
+              "type": "graph",
+              "title": "Annual patent activity",
+              "description": "Tracks patent filings by year",
+              "chart_type": "line",
+              "data_points": {"labels": ["2021", "2022", "2023", "2024"], "values": [14, 19, 28, 41], "unit": "Count"}
+            }
+          ],
+          "references": [
+            {"index": 1, "title": "Relevant Source", "url": "https://example.com/relevant", "category": "Web"}
+          ]
+        }
+        """
+
+    def fake_generate_content(*, api_key, model, contents, response_mime_type=None, temperature=None):
+        assert api_key == "test-key"
+        assert model == "gemini-3-flash-preview"
+        assert "Approved Graphable Questions" in contents
+        assert "gq_1" in contents
+        assert "How has annual patent activity changed from 2021 to 2024?" in contents
+        return FakeResponse()
+
+    monkeypatch.setattr(writer_agent, "gemini_generate_content", fake_generate_content)
+
+    result = writer_agent.write_chapter(
+        original_text="Original chapter text.",
+        research_findings=[
+            {
+                "title": "Relevant Source",
+                "url": "https://example.com/relevant",
+                "snippet": "Relevant evidence for the chapter.",
+                "source": "web",
+                "source_type": "web",
+                "directly_on_topic": True,
+                "approved_for_writing": True,
+            }
+        ],
+        blueprint={
+            "topic": "Quantitative Analysis",
+            "source_chapter_title": "Quantitative Analysis",
+            "report_subject": "DNA digital data storage",
+            "original_report_date": "2023-01-01",
+            "update_start_date": "2024-01-01",
+            "update_end_date": "2026-03-22",
+            "graphable_questions": [
+                {
+                    "graph_question_id": "gq_1",
+                    "question_text": "How has annual patent activity changed from 2021 to 2024?",
+                    "question_type": "trend",
+                    "candidate_metric": "Annual patent activity",
+                    "data_point_count": 4,
+                    "graphable_reasons": ["Has 4 ordered time points."],
+                    "preferred_chart_families": ["line", "bar"],
+                }
+            ],
+        },
+    )
+
+    assert result["visual_suggestions"][0]["graph_question_id"] == "gq_1"
+
+
+def test_write_chapter_preserves_extracted_historical_graph_data(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("WRITER_MODEL", "gemini-3-flash-preview")
+
+    class FakeResponse:
+        text = """
+        {
+          "chapter_title": "Quantitative Analysis",
+          "executive_takeaway": "A concise summary.",
+          "retained_claims": ["Claim still holds"],
+          "updated_claims": ["Claim updated"],
+          "new_claims": ["New claim"],
+          "open_questions": [],
+          "text_content": "[Figure ID: deadbeef111111111111111111111111]\\n\\nEvidence-backed update [1].",
+          "visual_suggestions": [
+            {
+              "id": "deadbeef111111111111111111111111",
+              "action": "update",
+              "type": "graph",
+              "title": "Updated chart",
+              "description": "Shows the revised data",
+              "chart_type": "bar",
+              "data_points": {
+                "labels": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+                "values": [45, 55, 70, 90, 120, 185, 260],
+                "unit": "Thousand Units"
+              }
+            }
+          ],
+          "references": [
+            {"index": 1, "title": "Relevant Source", "url": "https://example.com/relevant", "category": "Web"}
+          ]
+        }
+        """
+
+    monkeypatch.setattr(writer_agent, "gemini_generate_content", lambda **kwargs: FakeResponse())
+
+    result = writer_agent.write_chapter(
+        original_text="Original chapter text.",
+        research_findings=[
+            {
+                "title": "Relevant Source",
+                "url": "https://example.com/relevant",
+                "snippet": "Relevant evidence for the chapter.",
+                "source": "web",
+                "source_type": "web",
+                "directly_on_topic": True,
+                "approved_for_writing": True,
+                "passes_subject_anchor": True,
+            }
+        ],
+        blueprint={
+            "topic": "Quantitative Analysis",
+            "source_chapter_title": "Quantitative Analysis",
+            "report_subject": "DNA digital data storage",
+            "original_report_date": "2023-01-01",
+            "update_start_date": "2024-01-01",
+            "update_end_date": "2026-03-22",
+        },
+        assets_to_update=[
+            {
+                "id": "deadbeef111111111111111111111111",
+                "type": "graph",
+                "short_caption": "Original chart",
+                "description": "Original chart description",
+                "extracted_data_points": {
+                    "labels": ["2020", "2021", "2022", "2023"],
+                    "values": [42, 58, 79, 101],
+                    "unit": "Thousand Units",
+                },
+            }
+        ],
+    )
+
+    data_points = result["visual_suggestions"][0]["data_points"]
+    assert data_points["labels"] == ["2020", "2021", "2022", "2023", "2024", "2025", "2026"]
+    assert data_points["values"] == [42, 58, 79, 101, 120, 185, 260]
+    assert data_points["unit"] == "Thousand Units"

@@ -119,3 +119,69 @@ def test_quality_gate_flags_grouped_citation_mismatches_and_analyst_agent_leak(r
 
     assert {"meta_prompt_leakage", "citation_reference_mismatch", "broken_figure_marker"}.issubset(codes)
     assert result["summary"]["blocking"] is True
+
+
+def test_quality_gate_blocks_approved_graphs_without_plottable_data(report_metadata):
+    chapter = {
+        "title": "Quantitative Analysis",
+        "draft_text": "[Figure deadbeef1111: Empty Graph]",
+        "references": [
+            {"index": 1, "title": "Recent Update", "url": "https://example.com/update", "category": "Web"},
+        ],
+        "approved_visuals": [
+            {
+                "id": "deadbeef111122223333444455556666",
+                "marker_id": "deadbeef111122223333444455556666",
+                "type": "graph",
+                "title": "Empty Graph",
+                "data_points": {
+                    "labels": ["2024", "2025", "2026"],
+                    "values": [0, 0, 0],
+                    "unit": "USD Millions",
+                },
+            }
+        ],
+    }
+
+    result = evaluate_report_quality([chapter], report_metadata)
+    codes = {issue["code"] for issue in result["chapters"][0]["issues"]}
+
+    assert "graph_missing_data_points" in codes
+    assert result["summary"]["blocking"] is True
+
+
+def test_quality_gate_flags_graph_history_drift_and_missing_update_end_year(report_metadata):
+    chapter = {
+        "title": "Quantitative Analysis",
+        "draft_text": "[Figure deadbeef1111: Updated Graph]",
+        "references": [
+            {"index": 1, "title": "Recent Update", "url": "https://example.com/update", "category": "Web"},
+        ],
+        "approved_visuals": [
+            {
+                "id": "deadbeef111122223333444455556666",
+                "marker_id": "deadbeef111122223333444455556666",
+                "original_asset_id": "feed2023aa1111111111111111111111",
+                "type": "graph",
+                "title": "Updated Graph",
+                "chart_type": "bar",
+                "extracted_data_points": {
+                    "labels": ["2020", "2021", "2022", "2023"],
+                    "values": [42, 58, 79, 101],
+                    "unit": "Thousand Units",
+                },
+                "data_points": {
+                    "labels": ["2020", "2021", "2022", "2023", "2024", "2025"],
+                    "values": [45, 58, 79, 101, 120, 185],
+                    "unit": "Thousand Units",
+                },
+            }
+        ],
+    }
+
+    result = evaluate_report_quality([chapter], report_metadata)
+    codes = {issue["code"] for issue in result["chapters"][0]["issues"]}
+
+    assert "graph_preserved_history_drift" in codes
+    assert "graph_update_end_year_missing" in codes
+    assert result["summary"]["blocking"] is True

@@ -8,7 +8,12 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
-from gemini_client import generate_content as gemini_generate_content
+from llm_client import (
+    generate_content as gemini_generate_content,
+    get_api_key,
+    missing_api_key_error,
+    resolve_model,
+)
 from llm_json_utils import try_parse_json
 from logger_config import setup_logger
 
@@ -318,9 +323,9 @@ def judge_chapter_update_with_llm(
     blueprint: Optional[Dict[str, Any]] = None,
     references: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = get_api_key()
     if not api_key:
-        return {"error": "GEMINI_API_KEY not found"}
+        return {"error": missing_api_key_error()}
 
     blueprint = blueprint or {}
     references = references or []
@@ -388,7 +393,7 @@ References:
 
     response = gemini_generate_content(
         api_key=api_key,
-        model=_chapter_judge_model_name(),
+        model=resolve_model(_chapter_judge_model_name(), role="chapter_judge"),
         contents=prompt,
         response_mime_type="application/json",
         temperature=0.0,

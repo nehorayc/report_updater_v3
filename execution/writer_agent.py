@@ -6,7 +6,18 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 
-from gemini_client import generate_content as gemini_generate_content
+from graph_update_helpers import (
+    apply_graph_update_contract,
+    format_chart_data_points_for_prompt as _shared_format_chart_data_points_for_prompt,
+    normalize_chart_series as _shared_normalize_chart_series,
+)
+from llm_client import (
+    generate_content as gemini_generate_content,
+    get_api_key,
+    missing_api_key_error,
+    provider_display_name,
+    resolve_model,
+)
 from llm_json_utils import salvage_ordered_json, try_parse_json
 from logger_config import setup_logger
 
@@ -30,6 +41,7 @@ BULLET_LINE_PATTERN = re.compile(r"^\s*[*-]\s+(.*)$")
 BULLET_HEADING_PATTERN = re.compile(r"^\s*[*-]\s+\*\*(.+?)\*\*:?\s*(.*)$")
 MARKDOWN_HEADING_PATTERN = re.compile(r"^\s*#{1,6}\s+(.+?)\s*$")
 PRIVATE_USE_PATTERN = re.compile(r"[\uE000-\uF8FF]")
+YEAR_TOKEN_PATTERN = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
 _DEFAULT_WRITER_MODEL = "gemini-3-flash-preview"
 
 
@@ -74,6 +86,28 @@ def _build_evidence_snapshot(research_findings: List[Dict[str, Any]], limit: int
     return "\n".join(snapshot_lines) if snapshot_lines else "- No ranked evidence snapshot available."
 
 
+def _format_graphable_questions_for_prompt(graphable_questions: List[Dict[str, Any]], limit: int = 3) -> str:
+    questions = [question for question in graphable_questions or [] if isinstance(question, dict)]
+    if not questions:
+        return "- None supplied. Be conservative with new graphs unless an original asset must be updated."
+
+    lines = []
+    for question in questions[:limit]:
+        question_id = str(question.get("graph_question_id") or "").strip() or "gq"
+        question_text = str(question.get("question_text") or "").strip()
+        question_type = str(question.get("question_type") or "").strip() or "comparison"
+        chart_families = ", ".join(question.get("preferred_chart_families", [])[:3]) or "bar"
+        metric = str(question.get("candidate_metric") or "").strip()
+        data_point_count = int(question.get("data_point_count", 0) or 0)
+        reasons = "; ".join(question.get("graphable_reasons", [])[:2])
+        lines.append(
+            f"- {question_id}: {question_text} | Type: {question_type} | Metric: {metric or 'unspecified'} | "
+            f"Datapoints: {data_point_count} | Preferred charts: {chart_families}"
+            + (f" | Why graphable: {reasons}" if reasons else "")
+        )
+    return "\n".join(lines)
+
+
 def _normalize_list(value: Any, limit: int = 8) -> List[str]:
     if not isinstance(value, list):
         return []
@@ -98,6 +132,76 @@ def _normalize_marker_token(value: Any) -> str:
     if not token:
         return ""
     return re.sub(r"[^a-z0-9_-]", "", token)
+
+
+def _normalize_numeric_value(value: Any) -> Optional[int | float]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+    else:
+        text = str(value).strip().replace(",", "")
+        if not text:
+            return None
+        if text.endswith("%"):
+            text = text[:-1].strip()
+        try:
+            numeric = float(text)
+        except ValueError:
+            return None
+    return int(numeric) if numeric.is_integer() else round(numeric, 4)
+
+
+def _normalize_chart_series(data_points: Any) -> Optional[Tuple[List[str], List[int | float], str]]:
+    normalized = _shared_normalize_chart_series(data_points)
+    if not normalized:
+        return None
+    labels, values_by_series, unit, multi_series = normalized
+    if multi_series:
+        return None
+    return labels, list(values_by_series.get("__single__", [])), unit
+
+
+def _series_label_key(label: Any) -> str:
+    text = " ".join(str(label or "").split())
+    if not text:
+        return ""
+    year_match = YEAR_TOKEN_PATTERN.search(text)
+    if year_match:
+        return year_match.group(0)
+    return text.lower()
+
+
+def _sort_chart_series_if_years(
+    labels: List[str],
+    values: List[int | float],
+) -> Tuple[List[str], List[int | float]]:
+    year_pairs: List[Tuple[int, int, str, int | float]] = []
+    for index, label in enumerate(labels):
+        match = YEAR_TOKEN_PATTERN.search(label)
+        if not match:
+            return labels, values
+        year_pairs.append((int(match.group(0)), index, label, values[index]))
+
+    year_pairs.sort(key=lambda item: (item[0], item[1]))
+    return [item[2] for item in year_pairs], [item[3] for item in year_pairs]
+
+
+def _format_extracted_data_points_for_prompt(extracted_data_points: Any) -> str:
+    return _shared_format_chart_data_points_for_prompt(extracted_data_points)
+
+
+def _merge_update_visual_with_extracted_history(
+    visual: Dict[str, Any],
+    matched_asset: Dict[str, Any],
+    *,
+    update_end_year: Any = None,
+) -> Dict[str, Any]:
+    return apply_graph_update_contract(
+        visual,
+        matched_asset=matched_asset,
+        update_end_year=update_end_year,
+    )
 
 
 def _infer_text_language(text: str) -> str:
@@ -601,6 +705,8 @@ def _filter_research_findings_for_writer(research_findings: List[Dict[str, Any]]
 def _link_visual_updates_to_original_assets(
     visual_suggestions: List[Dict[str, Any]],
     assets_to_update: List[Dict[str, Any]],
+    *,
+    update_end_year: Any = None,
 ) -> List[Dict[str, Any]]:
     if not visual_suggestions or not assets_to_update:
         return visual_suggestions
@@ -636,6 +742,11 @@ def _link_visual_updates_to_original_assets(
             visual.setdefault("id", matched_asset.get("id"))
             visual["original_asset_id"] = matched_asset.get("id")
             visual["action"] = "update"
+            visual = _merge_update_visual_with_extracted_history(
+                visual,
+                matched_asset,
+                update_end_year=update_end_year,
+            )
 
         linked.append(visual)
 
@@ -653,14 +764,15 @@ def write_chapter(
     temperature: float = 0.5,
 ) -> Dict:
     """
-    Uses Gemini to produce an updated-edition chapter based on the original text,
+    Uses the selected LLM provider to produce an updated-edition chapter based on the original text,
     structured baseline hints, and fresh research findings.
     """
     logger.info(f"Starting chapter generation for topic: {blueprint.get('topic')} (Target: {target_word_count} words)")
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = get_api_key()
     if not api_key:
-        logger.error("GEMINI_API_KEY not found in environment.")
-        return {"error": "GEMINI_API_KEY not found"}
+        error = missing_api_key_error()
+        logger.error("%s.", error)
+        return {"error": error}
 
     assets_to_update = assets_to_update or []
     prior_chapter_context = prior_chapter_context or []
@@ -668,6 +780,12 @@ def write_chapter(
 
     findings_str = _stringify_findings(writer_findings)
     evidence_snapshot = _build_evidence_snapshot(writer_findings)
+    graphable_questions = [
+        question
+        for question in blueprint.get("graphable_questions", []) or []
+        if isinstance(question, dict)
+    ]
+    graphable_question_guidance = _format_graphable_questions_for_prompt(graphable_questions)
     baseline_summary = blueprint.get("baseline_summary", "")
     baseline_claims = "\n".join(f"- {claim}" for claim in blueprint.get("baseline_claims", []))
     original_report_date = blueprint.get("original_report_date", "Unknown")
@@ -703,9 +821,17 @@ def write_chapter(
                     f"as a Markdown table using NEW data from research. Original structure: {asset.get('description')}\n"
                 )
             else:
+                extracted_prompt_data = _format_extracted_data_points_for_prompt(asset.get("extracted_data_points"))
+                preservation_note = ""
+                if extracted_prompt_data:
+                    preservation_note = (
+                        " Preserve these historical datapoints EXACTLY in the updated graph and keep their original values "
+                        f"for existing years: {extracted_prompt_data}. Append only newer years supported by the fresh research. "
+                    )
                 update_instructions += (
                     f"- RECREATE GRAPH: Recreate Figure '{asset.get('short_caption')}' (Original ID: {asset['id']}) "
                     f"using NEW data from research through {update_end_date}. Description: {asset.get('description')}. "
+                    f"{preservation_note}"
                     f"YOU MUST add a matching entry in 'visual_suggestions' with id '{asset['id']}' and the new data points so the system can redraw it.\n"
                 )
         update_instructions += (
@@ -754,6 +880,9 @@ Research Filtering Note:
 Highest-Value Evidence Snapshot:
 {evidence_snapshot}
 
+Approved Graphable Questions:
+{graphable_question_guidance}
+
 User Objective (Blueprint):
 - Topic: {blueprint.get('topic')}
 - Timeframe: {blueprint.get('timeframe')}
@@ -778,6 +907,9 @@ CRITICAL WRITING RULES:
 - The updated chapter should clearly reflect developments between {update_start_date} and {update_end_date}.
 - Use the original text for context and continuity, but let the new evidence carry the chapter forward.
 - Use ONLY the approved research findings above as external evidence for factual updates.
+- Prefer any NEW graph suggestion to answer one of the approved graphable questions listed above.
+- Do not invent a decorative graph idea that is not grounded in the approved graphable questions, unless you are updating an original graph asset that the instructions explicitly require.
+- If a graph suggestion clearly maps to one of the approved graphable questions, include its `graph_question_id` in that visual suggestion.
 - Do not use cross-domain or merely analogical evidence as direct support for chapter claims.
 - If the approved findings do not support a correction, preserve the source framing and state uncertainty instead of improvising.
 - Do not reinterpret, overturn, or "correct" what the original report said unless the approved findings explicitly support that change.
@@ -843,6 +975,7 @@ OUTPUT FORMAT (MANDATORY JSON):
   "visual_suggestions": [
     {{
       "id": "a1b2c3d4",
+      "graph_question_id": "gq_1",
       "type": "graph",
       "title": "Short descriptive title",
       "description": "What this graph shows and why it is relevant",
@@ -872,21 +1005,22 @@ OUTPUT FORMAT (MANDATORY JSON):
 }}
 """
 
-    logger.debug(f"Prompt sent to Gemini (truncated): {prompt[:500]}...")
+    provider_name = provider_display_name()
+    logger.debug("Prompt sent to %s (truncated): %s...", provider_name, prompt[:500])
     start_time = time.time()
     try:
         response = gemini_generate_content(
             api_key=api_key,
-            model=_writer_model_name(),
+            model=resolve_model(_writer_model_name(), role="writer"),
             contents=prompt,
             response_mime_type="application/json",
             temperature=temperature,
         )
         latency = time.time() - start_time
-        logger.info(f"Gemini response received in {latency:.2f}s.")
+        logger.info("%s response received in %.2fs.", provider_name, latency)
 
         text = response.text.strip()
-        logger.debug(f"FULL Gemini Response:\n{text}")
+        logger.debug("FULL %s Response:\n%s", provider_name, text)
 
         if text.startswith("```json"):
             text = text[7:]
@@ -924,6 +1058,7 @@ OUTPUT FORMAT (MANDATORY JSON):
         normalized["visual_suggestions"] = _link_visual_updates_to_original_assets(
             normalized.get("visual_suggestions", []),
             assets_to_update,
+            update_end_year=update_end_date,
         )
         logger.info(f"Successfully generated chapter. Text length: {len(normalized.get('text_content', ''))}")
         return normalized

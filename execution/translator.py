@@ -3,7 +3,12 @@ from typing import Any, Dict, List
 import json
 from dotenv import load_dotenv
 from llm_json_utils import try_parse_json
-from gemini_client import generate_content as gemini_generate_content
+from llm_client import (
+    generate_content as gemini_generate_content,
+    get_api_key,
+    missing_api_key_error,
+    resolve_model,
+)
 
 load_dotenv()
 
@@ -94,16 +99,16 @@ def _extract_batch_translations(parsed: Any) -> Dict[str, str]:
 
 def translate_texts_batch(texts: List[str], target_lang: str, preserve_markdown: bool = True) -> List[str]:
     """
-    Translates multiple texts in batched Gemini calls and returns them in the
+    Translates multiple texts in batched LLM calls and returns them in the
     same order. Missing batch items fall back to single-item translation.
     """
     if not texts:
         return []
 
     logger.info("Starting batched translation to %s for %s item(s).", target_lang, len(texts))
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = get_api_key()
     if not api_key:
-        logger.error("GEMINI_API_KEY not found in environment.")
+        logger.error("%s.", missing_api_key_error())
         return list(texts)
 
     translated_by_index: Dict[int, str] = {}
@@ -113,7 +118,7 @@ def translate_texts_batch(texts: List[str], target_lang: str, preserve_markdown:
         try:
             response = gemini_generate_content(
                 api_key=api_key,
-                model='gemini-2.5-flash',
+                model=resolve_model('gemini-2.5-flash', role="translator"),
                 contents=prompt,
                 response_mime_type="application/json",
             )
@@ -134,13 +139,13 @@ def translate_texts_batch(texts: List[str], target_lang: str, preserve_markdown:
 
 def translate_content(text: str, target_lang: str) -> str:
     """
-    Translates report content into the target language using Gemini.
+    Translates report content into the target language using the selected LLM provider.
     Preserves markdown formatting, tables, and [Figure ID] markers.
     """
     logger.info(f"Starting translation to {target_lang}. Text length: {len(text)}")
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = get_api_key()
     if not api_key:
-        logger.error("GEMINI_API_KEY not found in environment.")
+        logger.error("%s.", missing_api_key_error())
         return text # Fallback
 
     prompt = f"""
@@ -168,7 +173,7 @@ def translate_content(text: str, target_lang: str) -> str:
     try:
         response = gemini_generate_content(
             api_key=api_key,
-            model='gemini-2.5-flash',
+            model=resolve_model('gemini-2.5-flash', role="translator"),
             contents=prompt,
         )
         latency = time.time() - start_time

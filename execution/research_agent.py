@@ -1,9 +1,13 @@
 ﻿from collections import Counter
-from duckduckgo_search import DDGS
+try:
+    from ddgs import DDGS
+except ImportError:  # pragma: no cover - compatibility fallback
+    from duckduckgo_search import DDGS
 import os
 import re
 import requests
 import time
+import warnings
 from copy import deepcopy
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,7 +16,12 @@ from urllib.parse import urlparse
 
 from logger_config import setup_logger
 from llm_json_utils import try_parse_json
-from gemini_client import generate_content as gemini_generate_content
+from llm_client import (
+    generate_content as gemini_generate_content,
+    get_api_key,
+    provider_display_name,
+    resolve_model,
+)
 
 logger = setup_logger("ResearchAgent")
 
@@ -74,6 +83,21 @@ _TOPIC_STOPWORDS = {
 _DEFAULT_RESEARCH_RANKER_MODEL = "gemini-2.5-flash"
 
 
+def _new_ddgs():
+    original_warn = warnings.warn
+
+    def _warn(message, *args, **kwargs):
+        if "has been renamed to `ddgs`" in str(message):
+            return None
+        return original_warn(message, *args, **kwargs)
+
+    warnings.warn = _warn
+    try:
+        return DDGS()
+    finally:
+        warnings.warn = original_warn
+
+
 def reset_runtime_diagnostics() -> None:
     _RUNTIME_DIAGNOSTICS.clear()
 
@@ -114,12 +138,12 @@ def _translate_to_english(text: str) -> str:
     try:
         from dotenv import load_dotenv
         load_dotenv()
-        api_key = os.getenv("GEMINI_API_KEY")
+        api_key = get_api_key()
         if not api_key:
             return text
         response = gemini_generate_content(
             api_key=api_key,
-            model='gemini-2.0-flash',
+            model=resolve_model('gemini-2.0-flash', role="translator"),
             contents=f"Translate the following text to English. Return ONLY the translation, no explanations:\n\n{text}",
         )
         translated = response.text.strip()
@@ -131,7 +155,7 @@ def _translate_to_english(text: str) -> str:
         if _is_quota_error(e):
             _record_runtime_diagnostic(
                 "warning",
-                "Gemini quota was exhausted while translating research terms. The app continued with the original wording, so search coverage may be weaker until the quota resets.",
+                f"{provider_display_name()} quota was exhausted while translating research terms. The app continued with the original wording, so search coverage may be weaker until the quota resets.",
             )
         return text
 
@@ -184,7 +208,7 @@ def _translate_terms_to_english(texts: List[str]) -> Dict[str, str]:
     try:
         from dotenv import load_dotenv
         load_dotenv()
-        api_key = os.getenv("GEMINI_API_KEY")
+        api_key = get_api_key()
         if not api_key:
             for text in pending:
                 translations[text] = text
@@ -209,7 +233,7 @@ TERMS:
             try:
                 response = gemini_generate_content(
                     api_key=api_key,
-                    model='gemini-2.0-flash',
+                    model=resolve_model('gemini-2.0-flash', role="translator"),
                     contents=prompt,
                     response_mime_type="application/json",
                 )
@@ -221,7 +245,7 @@ TERMS:
                 if _is_quota_error(exc):
                     _record_runtime_diagnostic(
                         "warning",
-                        "Gemini quota was exhausted while translating research terms. The app continued with the original wording, so search coverage may be weaker until the quota resets.",
+                        f"{provider_display_name()} quota was exhausted while translating research terms. The app continued with the original wording, so search coverage may be weaker until the quota resets.",
                     )
 
             for source in chunk:
@@ -524,14 +548,17 @@ def _llm_rerank_findings_for_topic(
     except Exception:
         pass
 
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = get_api_key()
     if not api_key:
         return _apply_deterministic_approval(findings)
 
     if len(findings) == 1:
         return _apply_deterministic_approval(findings)
 
-    model = os.getenv("RESEARCH_RANKER_MODEL", _DEFAULT_RESEARCH_RANKER_MODEL).strip() or _DEFAULT_RESEARCH_RANKER_MODEL
+    model = resolve_model(
+        os.getenv("RESEARCH_RANKER_MODEL", _DEFAULT_RESEARCH_RANKER_MODEL).strip() or _DEFAULT_RESEARCH_RANKER_MODEL,
+        role="research_ranker",
+    )
     source_chapter_title = str(blueprint.get("source_chapter_title") or blueprint.get("title") or "").strip()
     report_subject = str(blueprint.get("report_subject") or blueprint.get("edition_title") or "").strip()
     baseline_summary = str(blueprint.get("baseline_summary") or "").strip()
@@ -608,7 +635,7 @@ Candidate sources:
         if _is_quota_error(exc):
             _record_runtime_diagnostic(
                 "warning",
-                "Gemini quota was exhausted while reranking research sources. The app fell back to deterministic topic filtering.",
+                f"{provider_display_name()} quota was exhausted while reranking research sources. The app fell back to deterministic topic filtering.",
             )
         return _apply_deterministic_approval(findings)
 
@@ -793,11 +820,11 @@ def _split_reference_paragraphs(text: str) -> List[str]:
 
 
 def _gemini_research_fallback(topic: str, keywords: List[str], start_year: Optional[int], end_year: Optional[int]) -> List[Dict]:
-    logger.info(f"DDG yielded 0 results - using Gemini research fallback for: '{topic}'")
+    logger.info("DDG yielded 0 results - using %s research fallback for: '%s'", provider_display_name(), topic)
     try:
         from dotenv import load_dotenv
         load_dotenv()
-        api_key = os.getenv("GEMINI_API_KEY")
+        api_key = get_api_key()
         if not api_key:
             return []
 
@@ -816,7 +843,7 @@ Format as a numbered list. Be specific. Include real numbers, percentages, organ
 
         response = gemini_generate_content(
             api_key=api_key,
-            model='gemini-2.5-flash',
+            model=resolve_model('gemini-2.5-flash', role="research_fallback"),
             contents=prompt,
         )
         raw = response.text.strip()
@@ -839,14 +866,14 @@ Format as a numbered list. Be specific. Include real numbers, percentages, organ
                     "published_date": None,
                 })
 
-        logger.info(f"Gemini fallback produced {len(findings)} findings.")
+        logger.info("%s fallback produced %s findings.", provider_display_name(), len(findings))
         return findings[:5]
     except Exception as e:
-        logger.error(f"Gemini research fallback failed: {e}", exc_info=True)
+        logger.error("%s research fallback failed: %s", provider_display_name(), e, exc_info=True)
         if _is_quota_error(e):
             _record_runtime_diagnostic(
                 "warning",
-                "Gemini quota was exhausted during fallback research. No fallback findings were added for this chapter.",
+                f"{provider_display_name()} quota was exhausted during fallback research. No fallback findings were added for this chapter.",
             )
         return []
 
@@ -880,7 +907,8 @@ def search_web(query: str, max_results: int = 5, start_year: Optional[int] = Non
     raw_results = []
     start_time = time.time()
     try:
-        with DDGS() as ddgs:
+        ddgs = _new_ddgs()
+        with ddgs:
             ddgs_gen = ddgs.text(query, max_results=max_results)
             for result in ddgs_gen:
                 raw_results.append({
@@ -1122,7 +1150,11 @@ def perform_comprehensive_research(blueprint: Dict) -> List[Dict]:
             external_total += len(academic_results)
 
     if external_total == 0:
-        logger.warning(f"All external queries returned 0 results for topic '{en_topic}'. Activating Gemini research fallback.")
+        logger.warning(
+            "All external queries returned 0 results for topic '%s'. Activating %s research fallback.",
+            en_topic,
+            provider_display_name(),
+        )
         all_findings.extend(_gemini_research_fallback(en_topic, en_keywords, window.get('start_year'), window.get('end_year')))
 
     logger.info(f"Comprehensive research complete. Total findings: {len(all_findings)}")

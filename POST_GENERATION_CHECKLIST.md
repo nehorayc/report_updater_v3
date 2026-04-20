@@ -336,3 +336,107 @@ Spot-check notes:
 | Non-blocking follow-ups | Remove or suppress empty charts when there are no data points; tighten source selection so cross-domain papers stop backing core DNA-storage claims; require complete adoption-timeline values before export; document the quality-gate override and current fallback behavior |
 | Ship / regenerate / patch | `Patch and regenerate` |
 | Short summary of this run | This export is materially better than the 19:08 UTC run: raw figure placeholders are gone, the DOCX is clean, and the meta leak is fixed. It is still not shippable because grounding remains weak and off-topic in key sections, one quantitative visual is an empty shell, and a couple of scaffold artifacts still appear in the markdown. |
+
+### Run 2026-04-16 07:12 UTC
+
+#### Run Metadata
+
+| Field | Value |
+| --- | --- |
+| Date | 2026-04-16 |
+| Branch / Commit | `devcodex` / `b660b57` |
+| Source report / input | `report-DNA-digital-data-storage.pdf` |
+| Chapters or scope reviewed | `Background`, `Qualitative analysis`, `Quantitative Analysis`, `Outlook & Assessment of DNA Digital Data Storage Updated Edition` |
+| Model / settings used | Not fully captured in the export artifact. Export metadata shows update end date `2026-04-16` and audience `General professional audience`. Logs for this run show DuckDuckGo image-search retries, repeated quality-gate cleanup passes, and final assembly continuing with the quality-gate override enabled. |
+| Reviewer | Codex |
+
+#### 1. Automated Checks
+
+| Area | Test | Method | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Tests | Full pytest suite passes | `pytest` | `Pass` | `77 passed, 5 warnings in 129.75s` |
+| Tests | Targeted regression tests for touched modules pass | `pytest tests/test_chapter_update_evaluator.py tests/test_research_agent.py tests/test_gemini_client.py tests/test_doc_builder.py`; `pytest tests/test_vision_service.py tests/test_writer_and_analyzer_helpers.py tests/test_live_graph_updater.py tests/test_live_graph_upgrade_flow.py` | `Pass` | `28 passed in 5.93s` for the core regression pack and `18 passed in 77.46s` for the graph/vision/writer touchpoints |
+| Tests | Live canary passes if this run is important enough to pay for it | `RUN_LIVE_API_TESTS=1 pytest tests/test_live_single_chapter.py -m live_api` | `N/A` | Not explicitly run as part of this checklist pass |
+| Tests | Export smoke test works for the generated output | Opened markdown directly, parsed DOCX with `python-docx`, and verified DOCX zip integrity | `Pass` | Latest markdown and DOCX both open cleanly; DOCX zip integrity passes and no raw placeholder tokens remain in the exported DOCX text |
+
+#### 2. Writing Quality
+
+| Area | Test | What good looks like | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Writing | Scope is preserved | The rewrite stays on the original chapter subject | `Warn` | The report stays on DNA storage overall, but several core explanations still lean on clinical-genomics and cancer-diagnostics material rather than DNA-storage-specific evidence |
+| Writing | Update window is respected | The chapter uses recent facts from the intended timeframe | `Warn` | The prose is framed through 2026, but several “as of 2026” claims are supported mainly by older or original-report references rather than fresh external evidence |
+| Writing | Tone and language match the source | It reads like the source report, not a generic AI memo | `Warn` | More readable than the earlier April 11 run, but still template-shaped and stitched in quantitative and outlook sections |
+| Writing | Freshness is real, not cosmetic | New claims, dates, entities, and numbers were added meaningfully | `Warn` | The draft adds fresh-seeming TRL, adoption, and commercialization claims, but several of those additions are only weakly grounded |
+| Writing | No prompt leakage or meta-writing | No phrases like "based on the provided sources" or "this updated edition" | `Pass` | No obvious process leakage like `Analyst Agent` remains in the markdown or DOCX body text |
+| Writing | No repetition or contradictions | No duplicate claims across sections or internal conflicts | `Warn` | No direct contradiction found, but the same “clinical diagnostics enabled DNA storage” bridge is repeated across multiple chapters |
+| Writing | Transitions feel natural | Sections connect cleanly and do not read like stitched fragments | `Warn` | Several transitions, especially into `Outlook`, still read like adjacent source summaries rather than one continuous report argument |
+| Writing | Visual suggestions are relevant | Suggested visuals match the text and are worth including | `Fail` | Two differently captioned workflow visuals resolve to the same underlying image file, and the generated `TRL Progression` graph never appears in the final export |
+
+#### 3. Citation and Research Grounding
+
+| Area | Test | What to check | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Citations | Inline citations map to real references | Every cited number points to an actual reference entry | `Warn` | Final bibliography resolves cleanly from `1-8`, but export logs show repeated unresolved citation tokens `2`, `3`, and `4` being dropped during normalization |
+| Citations | Reference list is deduped and renumbered correctly | No broken or repeated numbering | `Pass` | No duplicated or skipped numbering found in the final bibliography |
+| Research | Spot-check citation accuracy | Manually verify 3-5 cited claims against the source page | `Fail` | Multiple sampled claims are still mismatched to their cited sources; see notes below |
+| Research | No invented URLs or sources | Every URL appears in gathered findings and opens correctly | `Pass` | Sampled OpenAlex URLs are real and resolve to the cited works |
+| Research | Sources are on-topic | No background-only or cross-domain sources are doing core support work | `Fail` | Several core claims still rely on glioblastoma, AML, and cancer-biomarker papers as if they were direct DNA-storage evidence |
+| Research | Named entities, dates, and metrics are grounded | Important facts can be traced back to real evidence | `Fail` | Sampled commercialization, TRL, adoption-stage, and technical-readiness claims are not well supported by the cited sources |
+
+Spot-check notes:
+
+- Claim: glioblastoma liquid-biopsy precision directly supports DNA data sequencing and retrieval `[1]`
+  Result: `Fail`
+  Note: Ref `[1]` is `Liquid Biopsy in Glioblastoma`, a review of GBM biomarkers and liquid-biopsy methods, not DNA data storage evidence at [report-DNA-digital-data-storage_20260416_071225.md](/workspaces/report_updater_v3-main/exports/report-DNA-digital-data-storage_20260416_071225_export/report-DNA-digital-data-storage_20260416_071225.md:13).
+- Claim: AML genomic-landscape and MRD assay advances underpin the current state of DNA storage `[3]`
+  Result: `Fail`
+  Note: Ref `[3]` is the 2016 ELN AML recommendations paper; it is about leukemia diagnosis and management rather than DNA-storage state, drivers, or patent trends at [report-DNA-digital-data-storage_20260416_071225.md](/workspaces/report_updater_v3-main/exports/report-DNA-digital-data-storage_20260416_071225_export/report-DNA-digital-data-storage_20260416_071225.md:69) and [report-DNA-digital-data-storage_20260416_071225.md](/workspaces/report_updater_v3-main/exports/report-DNA-digital-data-storage_20260416_071225_export/report-DNA-digital-data-storage_20260416_071225.md:109).
+- Claim: DNA methylation biomarker stability is a direct blueprint for archival data verification `[5]`
+  Result: `Fail`
+  Note: Ref `[5]` is a cancer liquid-biopsy review about methylation biomarkers, not archival data verification or DNA-storage system design at [report-DNA-digital-data-storage_20260416_071225.md](/workspaces/report_updater_v3-main/exports/report-DNA-digital-data-storage_20260416_071225_export/report-DNA-digital-data-storage_20260416_071225.md:103).
+- Claim: digital-economics cost reductions move DNA storage into the `Early Adopters` phase `[6]`
+  Result: `Warn`
+  Note: Ref `[6]` does support the five cost categories, but it does not by itself support the DNA-storage adoption-stage claim at [report-DNA-digital-data-storage_20260416_071225.md](/workspaces/report_updater_v3-main/exports/report-DNA-digital-data-storage_20260416_071225_export/report-DNA-digital-data-storage_20260416_071225.md:99).
+- Claim: DNA storage is at `TRL 8` in 2026 and already entering `Early Adopters (2025–2030)` `[8]`
+  Result: `Fail`
+  Note: These are high-confidence current-state claims backed only by the original report chapter, while the run logs simultaneously show chapter-4 citation mismatches and dropped unresolved citations before export at [report-DNA-digital-data-storage_20260416_071225.md](/workspaces/report_updater_v3-main/exports/report-DNA-digital-data-storage_20260416_071225_export/report-DNA-digital-data-storage_20260416_071225.md:129) and [report-DNA-digital-data-storage_20260416_071225.md](/workspaces/report_updater_v3-main/exports/report-DNA-digital-data-storage_20260416_071225_export/report-DNA-digital-data-storage_20260416_071225.md:152).
+
+#### 4. Output and Export Quality
+
+| Area | Test | What to check | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Output | Markdown export is clean | No raw placeholders, broken headings, or malformed citations | `Warn` | The markdown opens cleanly and raw placeholder leakage is fixed, but export logs show unresolved citation tokens being silently dropped during normalization |
+| Output | DOCX export opens cleanly | File opens without corruption or layout failure | `Pass` | DOCX parsed successfully with `python-docx`; zip integrity check passed |
+| Output | Visual placeholders are removed | No `[visual: ...]` or raw figure tokens remain | `Pass` | No raw placeholder tokens remain in the final markdown or DOCX body text |
+| Output | Images and graphs render correctly | Captions, placement, and sizing look intentional | `Fail` | The two workflow/lifecycle figures are the same image under different captions, the quantitative chapter dropped two failed visuals, and the generated TRL chart did not make it into the final export |
+| Output | Bibliography looks professional | Ordering, spacing, titles, and URLs are readable | `Pass` | Readable numbered bibliography with stable titles and links |
+| Output | No unwanted synthetic front matter | No accidental executive summary or methodology sections unless intended | `Pass` | No accidental executive summary or methodology sections were inserted |
+
+#### 5. Robustness and Ops
+
+| Area | Test | What to check | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Reliability | Missing key / quota behavior is acceptable | Errors degrade clearly instead of failing silently | `Fail` | Image search hit repeated DuckDuckGo `403 Ratelimit` failures, and final assembly still continued even after the quality gate remained blocking because the override was enabled |
+| Reliability | Runtime is acceptable | The generation is not meaningfully slower than expected | `Warn` | Image-search retries and repeated quality-gate cleanup passes add avoidable latency |
+| Reliability | Cost is acceptable | Retries and live calls did not create an unexpected usage spike | `Warn` | No cost telemetry is captured, and the run did incur repeated failed retries |
+| Ops | Run instructions still match reality | README and launch scripts still reflect the actual flow | `Warn` | Core flow still matches reality, but the current quality-gate override path and retry behavior are not surfaced clearly in the checklist or docs |
+| Ops | No stray temp artifacts remain outside `.tmp/` | Root folder is clean after the run | `Fail` | Root still contains many `pytest-cache-files-*`, `sandbox_pytest`, and `tmp_*` directories outside `.tmp/` |
+| Ops | No accidental debug output shipped | No leftover prints, scratch files, or dev-only text in outputs | `Pass` | No obvious debug-print or scratch-text leakage appears in the exported markdown or DOCX |
+
+#### 6. Cross-Chapter Review
+
+| Area | Test | What to check | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Coherence | Chapters do not fight each other | Dates, claims, and terminology are consistent across chapters | `Warn` | No direct contradiction found, but the confidence of the commercialization and TRL claims exceeds the quality of the evidence supporting them |
+| Coherence | Repetition is under control | The same stat or explanation is not repeated too often | `Warn` | The report repeatedly reuses the same clinical-genomics bridge to justify DNA-storage progress |
+| Coherence | Intro and conclusion still fit the body | Framing and takeaways match what the chapters actually say | `Warn` | Broad framing is consistent, but the conclusion inherits the same grounding weaknesses as the body |
+| Coherence | Overall report feels like one document | Voice, formatting, and evidence style feel consistent | `Warn` | Formatting is cleaner than the earlier April 11 export, but evidence quality is still uneven enough to break publication readiness |
+
+#### 7. Final Decision
+
+| Field | Value |
+| --- | --- |
+| Blocking issues found | Citation grounding is still weak across `Background`, `Qualitative analysis`, `Quantitative Analysis`, and especially `Outlook`; export logs show unresolved citations being dropped during normalization; the quality gate remained blocking for chapter 4 but final assembly proceeded via override; visuals are not fully trustworthy because two captions point to the same image and the TRL chart is missing from the final export; root still contains stray temp artifacts outside `.tmp/` |
+| Non-blocking follow-ups | Tighten source selection so clinical/oncology papers stop backing core DNA-storage claims; fail export more explicitly when citations are dropped during normalization; prevent final assembly from silently normalizing away citation mismatches; improve image-search fallback when DuckDuckGo ratelimits; clean root-level temp directories; replace deprecated `duckduckgo_search` usage with `ddgs` |
+| Ship / regenerate / patch | `Patch and regenerate` |
+| Short summary of this run | This export is mechanically better than the April 11 versions: tests are green, the DOCX is valid, placeholder leakage is gone, and failed quantitative visuals were dropped instead of shipping as raw markers. It is still not shippable because source grounding remains weak in core sections, the quality gate was overridden while chapter 4 still had blocking citation errors, and the visual layer still has trust issues. |

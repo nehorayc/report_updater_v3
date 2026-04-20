@@ -8,6 +8,7 @@ import pytest
 from dotenv import load_dotenv
 
 from chapter_update_evaluator import evaluate_chapter_update
+from live_test_utils import skip_if_live_quota_exhausted
 from quality_gate import evaluate_report_quality
 from research_agent import (
     consume_runtime_diagnostics as consume_research_runtime_diagnostics,
@@ -74,6 +75,7 @@ The refreshed chapter should preserve that structure while updating the evidence
     findings = perform_comprehensive_research(blueprint)
     research_diagnostics = consume_research_runtime_diagnostics()
 
+    skip_if_live_quota_exhausted(findings, research_diagnostics)
     assert len(findings) >= 3, research_diagnostics
     assert sum(1 for finding in findings if str(finding.get("snippet", "")).strip()) >= 3
     assert any(str(finding.get("url", "")).startswith("http") for finding in findings)
@@ -89,6 +91,7 @@ The refreshed chapter should preserve that structure while updating the evidence
         temperature=0.2,
     )
 
+    skip_if_live_quota_exhausted(writer_result)
     assert "error" not in writer_result, writer_result.get("raw_content", "")
 
     draft_text = writer_result.get("text_content", "")

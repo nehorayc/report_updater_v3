@@ -1,0 +1,32 @@
+[
+  {
+    "title": "[For Figure feed2023] Mock enterprise AI server tracker",
+    "url": "https://example.com/mock-enterprise-ai-server-tracker",
+    "snippet": "Enterprise AI server shipments reached roughly 120 thousand units in 2024, increased to about 185 thousand units in 2025, and remained on pace to approach 260 thousand units in 2026 as production inference deployments widened.",
+    "source": "web",
+    "source_type": "web",
+    "directly_on_topic": true,
+    "approved_for_writing": true,
+    "passes_subject_anchor": true
+  },
+  {
+    "title": "[For Figure feed2023] Mock infrastructure demand outlook",
+    "url": "https://example.com/mock-ai-infrastructure-demand-outlook",
+    "snippet": "Enterprise purchases of AI-optimized servers broadened in 2025 as private-cluster projects expanded and organizations moved more generative AI workloads into production environments.",
+    "source": "web",
+    "source_type": "web",
+    "directly_on_topic": true,
+    "approved_for_writing": true,
+    "passes_subject_anchor": true
+  },
+  {
+    "title": "Mock enterprise generative AI operations survey",
+    "url": "https://example.com/mock-enterprise-gen-ai-survey",
+    "snippet": "Enterprises reported higher production deployment rates in 2024 and 2025, increasing pressure on infrastructure capacity, hardware budgeting, and deployment governance.",
+    "source": "web",
+    "source_type": "web",
+    "directly_on_topic": true,
+    "approved_for_writing": true,
+    "passes_subject_anchor": true
+  }
+]

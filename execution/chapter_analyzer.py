@@ -6,7 +6,13 @@ from typing import Dict, List, Any
 from logger_config import setup_logger
 import time
 from llm_json_utils import salvage_ordered_json, try_parse_json
-from gemini_client import generate_content as gemini_generate_content
+from llm_client import (
+    generate_content as gemini_generate_content,
+    get_api_key,
+    missing_api_key_error,
+    provider_display_name,
+    resolve_model,
+)
 
 load_dotenv()
 logger = setup_logger("ChapterAnalyzer")
@@ -251,7 +257,7 @@ def _analyze_chunk_with_batch_model(api_key: str, chapters: List[Dict[str, Any]]
     start_time = time.time()
     response = gemini_generate_content(
         api_key=api_key,
-        model='gemini-2.5-flash',
+        model=resolve_model('gemini-2.5-flash', role="analyzer"),
         contents=prompt,
         response_mime_type="application/json",
     )
@@ -282,7 +288,7 @@ def analyze_chapters_batch(
     max_chapters: int = _BATCH_MAX_CHAPTERS,
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Analyzes multiple chapters in batched Gemini calls and returns a mapping of
+    Analyzes multiple chapters in batched LLM calls and returns a mapping of
     chapter_id -> normalized analysis. If a batch response is malformed or
     incomplete, the missing chapters automatically fall back to single-chapter
     analysis to preserve behavior.
@@ -291,9 +297,9 @@ def analyze_chapters_batch(
         return {}
 
     logger.info("Starting batched analysis for %s chapter(s).", len(chapters))
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = get_api_key()
     if not api_key:
-        logger.error("GEMINI_API_KEY missing.")
+        logger.error("%s.", missing_api_key_error())
         return {
             str(chapter.get("id") or f"chapter_{index + 1}"): _fallback_analysis(
                 str(chapter.get("title", "")),
@@ -317,7 +323,8 @@ def analyze_chapters_batch(
 
         if skip_remote_analysis:
             logger.warning(
-                "Skipping Gemini batch analysis for chunk %s/%s because a prior chunk hit quota/rate limits. Using local fallback analysis.",
+                "Skipping %s batch analysis for chunk %s/%s because a prior chunk hit quota/rate limits. Using local fallback analysis.",
+                provider_display_name(),
                 chunk_index,
                 len(chunks),
             )
@@ -377,9 +384,9 @@ def analyze_chapter_content(title: str, text: str) -> Dict[str, Any]:
     """
     logger.info(f"Starting analysis for chapter: '{title}' (Length: {len(text)})")
 
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = get_api_key()
     if not api_key:
-        logger.error("GEMINI_API_KEY missing.")
+        logger.error("%s.", missing_api_key_error())
         return _fallback_analysis(title, text)
 
     prompt = f"""
@@ -416,7 +423,7 @@ def analyze_chapter_content(title: str, text: str) -> Dict[str, Any]:
     try:
         response = gemini_generate_content(
             api_key=api_key,
-            model='gemini-2.5-flash',
+            model=resolve_model('gemini-2.5-flash', role="analyzer"),
             contents=prompt,
             response_mime_type="application/json",
         )

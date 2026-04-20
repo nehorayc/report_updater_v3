@@ -6,11 +6,21 @@ import uuid
 import base64
 from io import BytesIO
 from dotenv import load_dotenv
-from gemini_client import generate_content as gemini_generate_content
+from llm_client import (
+    generate_content as gemini_generate_content,
+    get_api_key,
+    missing_api_key_error,
+    resolve_model,
+)
 
 load_dotenv()
 
 from logger_config import setup_logger
+from graph_update_helpers import (
+    graph_has_plottable_data,
+    graph_update_validation_issues,
+    normalize_chart_series,
+)
 import time
 
 logger = setup_logger("GraphGenerator")
@@ -83,43 +93,22 @@ def _coerce_numeric_series(values, target_len: int) -> list[float]:
     return normalized
 
 
-def _flatten_numeric_values(labels, values) -> list[float]:
-    if not isinstance(labels, list) or not labels:
-        return []
-
-    if isinstance(values, dict):
-        flattened: list[float] = []
-        for measurement in values.values():
-            if isinstance(measurement, dict):
-                measurement = [measurement.get(label) or measurement.get(str(label), 0) for label in labels]
-            flattened.extend(_coerce_numeric_series(measurement, len(labels)))
-        return flattened
-
-    if values is None:
-        return []
-
-    return _coerce_numeric_series(values, len(labels))
-
-
 def _has_plottable_data(visual_dict: dict) -> bool:
-    data = visual_dict.get("data_points", {}) or {}
-    labels = data.get("labels", [])
-    values = data.get("values", [])
+    return graph_has_plottable_data(visual_dict.get("data_points", {}))
 
-    flattened = _flatten_numeric_values(labels, values)
-    if not flattened:
-        return False
-    return any(abs(value) > 1e-9 for value in flattened)
+
+def _normalized_graph_payload(visual_dict: dict):
+    data = visual_dict.get("data_points", {}) or {}
+    return normalize_chart_series(data)
 
 
 def _should_use_static_first(visual_dict: dict) -> bool:
-    data = visual_dict.get("data_points", {}) or {}
-    labels = data.get("labels", [])
+    normalized = _normalized_graph_payload(visual_dict)
     chart_type = str(visual_dict.get("chart_type") or "bar").lower()
 
     if chart_type not in _SUPPORTED_STATIC_CHART_TYPES:
         return False
-    if not isinstance(labels, list) or not labels:
+    if not normalized:
         return False
     if not _has_plottable_data(visual_dict):
         return False
@@ -128,14 +117,14 @@ def _should_use_static_first(visual_dict: dict) -> bool:
 
 def generate_graph_with_llm(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
     """
-    Uses Gemini to write a Matplotlib Python script for the given visual,
+    Uses the selected LLM provider to write a Matplotlib Python script for the given visual,
     then executes it safely. Returns {'path': ...} on success, {'error': ...} on failure.
     Includes one retry if the code runs but produces no file (path mismatch).
     """
     logger.info(f"Attempting LLM-based graph generation for: '{visual_dict.get('title')}'")
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = get_api_key()
     if not api_key:
-        logger.warning("GEMINI_API_KEY not found, skipping LLM graph generation.")
+        logger.warning("%s, skipping LLM graph generation.", missing_api_key_error())
         return {"error": "No API key"}
 
     if not os.path.exists(output_dir):
@@ -190,7 +179,7 @@ Respond with ONLY the executable Python code. No explanations, no markdown fence
         start = time.time()
         response = gemini_generate_content(
             api_key=api_key,
-            model='gemini-2.5-flash',
+            model=resolve_model('gemini-2.5-flash', role="graph"),
             contents=prompt,
         )
         logger.info(f"LLM code generated in {time.time()-start:.2f}s")
@@ -241,45 +230,36 @@ def _generate_static_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") 
         os.makedirs(output_dir)
 
     title = visual_dict.get("title", "Data Visualization")
-    data = visual_dict.get("data_points", {})
-    labels = data.get("labels", [])
-    values = data.get("values", [])
-    unit = data.get("unit", "")
+    normalized_payload = _normalized_graph_payload(visual_dict)
     chart_type = visual_dict.get("chart_type", "bar").lower()
+    y_axis_scale = str(visual_dict.get("y_axis_scale") or "linear").strip().lower()
 
-    if not _has_plottable_data(visual_dict):
-        logger.warning(f"Insufficient data for graph '{title}': labels={len(labels)}, values={len(values)}")
+    if not normalized_payload or not _has_plottable_data(visual_dict):
+        logger.warning("Insufficient data for graph '%s'.", title)
         return {"error": "No data points found for graph"}
+
+    labels, values_by_series, unit, multi_series = normalized_payload
 
     start_time = time.time()
     try:
         fig, ax = plt.subplots(figsize=(12, 7))
         x_positions = list(range(len(labels)))
+        flattened_values = [float(value) for series_values in values_by_series.values() for value in series_values]
 
         # --- Bug 6 fix: route by chart_type ---
 
-        # Handle multi-series dict values (applies to bar and line)
-        if isinstance(values, dict):
+        # Handle multi-series bar/line charts.
+        if multi_series and chart_type in {"bar", "line"}:
             import numpy as np
             x = np.arange(len(labels))
-            num_series = max(len(values), 1)
+            num_series = max(len(values_by_series), 1)
             width = 0.8 / num_series
             multiplier = 0
 
-            for idx, (attribute, measurement) in enumerate(values.items()):
+            for idx, (attribute, measurement) in enumerate(values_by_series.items()):
                 offset = width * multiplier
                 color = _CORP_COLORS[idx % len(_CORP_COLORS)]
-
-                if isinstance(measurement, dict):
-                    aligned_data = []
-                    for label in labels:
-                        val = measurement.get(label) or measurement.get(str(label), 0)
-                        aligned_data.append(val)
-                    measurement = aligned_data
-
-                if len(measurement) != len(labels):
-                    logger.warning(f"Data mismatch for {attribute}: truncating/padding.")
-                measurement = _coerce_numeric_series(measurement, len(labels))
+                measurement = [float(value) for value in measurement]
 
                 if chart_type == "line":
                     ax.plot(x, measurement, marker='o', label=attribute, color=color, linewidth=2)
@@ -292,14 +272,22 @@ def _generate_static_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") 
             ax.legend(loc='upper left')
 
         elif chart_type == "pie":
-            # Pie chart: ignore labels/values mismatch gracefully
-            float_vals = _coerce_numeric_series(values, len(labels))
+            if multi_series:
+                first_series_name = next(iter(values_by_series))
+                float_vals = [float(value) for value in values_by_series[first_series_name]]
+                logger.warning(
+                    "Pie chart '%s' received multiple series; using '%s' for rendering.",
+                    title,
+                    first_series_name,
+                )
+            else:
+                float_vals = [float(value) for value in next(iter(values_by_series.values()))]
             colors = _CORP_COLORS[:len(labels)]
             ax.pie(float_vals, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
             ax.axis('equal')
 
         elif chart_type == "line":
-            float_vals = _coerce_numeric_series(values, len(labels))
+            float_vals = [float(value) for value in next(iter(values_by_series.values()))]
             ax.plot(x_positions, float_vals, marker='o', color=_CORP_COLORS[0], linewidth=2.5, markersize=6)
             ax.set_xticks(x_positions)
             ax.set_xticklabels(labels, rotation=45 if len(labels) > 4 else 0, ha='right')
@@ -307,16 +295,23 @@ def _generate_static_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") 
 
         else:
             # Default: bar chart (single series)
-            float_vals = _coerce_numeric_series(values, len(labels))
+            float_vals = [float(value) for value in next(iter(values_by_series.values()))]
             colors = _CORP_COLORS[:len(labels)]
             ax.bar(x_positions, float_vals, color=colors)
             ax.set_xticks(x_positions)
             ax.set_xticklabels(labels, rotation=45 if len(labels) > 4 else 0, ha='right')
 
         ax.set_title(title, fontsize=14, fontweight='bold', pad=15)
-        if unit and chart_type != "pie":
-            ax.set_ylabel(unit)
         if chart_type != "pie":
+            y_axis_label = unit
+            if y_axis_scale == "log" and flattened_values and all(value > 0 for value in flattened_values):
+                ax.set_yscale("log")
+                if y_axis_label:
+                    y_axis_label = f"{y_axis_label} (log scale)"
+                else:
+                    y_axis_label = "Log scale"
+            if y_axis_label:
+                ax.set_ylabel(y_axis_label)
             ax.grid(axis='y', linestyle='--', alpha=0.7)
         plt.tight_layout()
 
@@ -341,6 +336,25 @@ def generate_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
     underspecified visuals.
     """
     logger.info(f"Starting graph generation: '{visual_dict.get('title')}'")
+
+    validation_issues = graph_update_validation_issues(
+        visual_dict,
+        update_end_year=visual_dict.get("update_end_date"),
+        extracted_data_points=visual_dict.get("extracted_data_points"),
+    )
+    blocking_issues = [
+        issue
+        for issue in validation_issues
+        if issue.get("code") != "graph_missing_chart_type"
+    ]
+    if blocking_issues:
+        message = " | ".join(issue["message"] for issue in blocking_issues[:4])
+        logger.warning(
+            "Skipping graph generation for '%s' because update validation failed: %s",
+            visual_dict.get("title"),
+            message,
+        )
+        return {"error": f"Graph update validation failed: {message}"}
 
     if not _has_plottable_data(visual_dict):
         logger.warning(

@@ -26,7 +26,7 @@ The application logic follows a linear state machine in `app.py`, with a feedbac
 *   **UI:** Gallery of extracted assets.
 *   **User Action:** Checkbox selection `[x] Include`.
 *   **System Action (On Transition):**
-    *   **Vision Analysis:** Transcribe selected Graph/Table data via Gemini Vision.
+    *   **Vision Analysis:** Transcribe selected Graph/Table data via the selected multimodal LLM provider.
     *   **Text Analysis:** Analyze chapters to determine initial Topic, Timeframe, and Keywords.
 
 ### **State 3: SOURCE VISUAL UPDATE PLANNING**
@@ -102,6 +102,15 @@ The application logic follows a linear state machine in `app.py`, with a feedbac
 
 ### **B. Reference Material**
 *   **Logic:** Loaded in State 4. Filtered during State 5 (Research) based on keyword matching.
+
+### **C. LLM Provider Reliability**
+*   **Tooling:** Route app-level LLM calls through `execution/llm_client.py` so provider selection, token/cost telemetry, and response normalization remain centralized.
+*   **Provider selection:** `LLM_PROVIDER=gemini|openai` controls the backend. Gemini is the default and uses `GEMINI_API_KEY`; OpenAI uses `OPENAI_API_KEY` and defaults to `OPENAI_MODEL=gpt-5.4-mini`.
+*   **Gemini tooling:** Gemini provider calls continue to route through `execution/gemini_client.py` so retry, rate limiting, and fallback behavior remains centralized.
+*   **Flash 3 high-demand fallback:** If a Gemini Flash 3 model returns `503 UNAVAILABLE` with a high-demand message, retry the same request once on `gemini-2.5-flash`.
+*   **Flash 2.5 high-demand fallback:** If `gemini-2.5-flash` returns the same high-demand `503`, retry once on `gemini-2.0-flash`; this protects graph/asset vision stages that already use Flash 2.5 directly.
+*   **Quota handling:** Do not mask `429 RESOURCE_EXHAUSTED` quota errors with model fallback; surface them so the app can pause, degrade deterministically, or notify the user.
+*   **Usage reporting:** Record LLM calls, input/output/total tokens, latency, and estimated cost in `execution/llm_usage.py`. Save JSON/CSV reports beside the final export.
 
 ---
 

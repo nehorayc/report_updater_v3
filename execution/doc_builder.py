@@ -3,12 +3,14 @@ from docx.shared import Inches, Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+import hashlib
+import json
 import os
 import re
 import zipfile
 import shutil
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from logger_config import setup_logger
 import time
 
@@ -23,6 +25,14 @@ VISUAL_MARKER_PATTERN = re.compile(
 )
 RAW_VISUAL_TOKEN_PATTERN = re.compile(r'\[\s*visual\s*:\s*([A-Za-z0-9][A-Za-z0-9_-]{3,63})[^\]]*\]', re.IGNORECASE)
 _AMBIGUOUS_VISUAL = object()
+
+
+class ExportValidationError(RuntimeError):
+    """Raised when a report cannot be exported safely."""
+
+
+def _normalize_text_key(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip().lower()
 
 
 def _reference_identity(ref: Dict) -> tuple:
@@ -63,7 +73,14 @@ def _ordered_local_references(references: List[Dict]) -> List[Dict]:
     return [ref for _, _, ref in decorated]
 
 
-def _remap_inline_citations(text: str, citation_map: Dict[str, int]) -> str:
+def _remap_inline_citations(
+    text: str,
+    citation_map: Dict[str, int],
+    *,
+    unresolved_tokens: List[str] | None = None,
+    chapter_title: str = "",
+    field_name: str = "",
+) -> str:
     """Remaps inline citations like [2] or [Original, 2] to global bibliography indices."""
     if not text or not citation_map:
         return text
@@ -80,6 +97,10 @@ def _remap_inline_citations(text: str, citation_map: Dict[str, int]) -> str:
             mapped = citation_map.get(normalized)
             if mapped is None:
                 logger.warning("Dropping unresolved citation token during export normalization: %s", normalized)
+                if unresolved_tokens is not None:
+                    context_bits = [bit for bit in (chapter_title, field_name) if bit]
+                    context = " / ".join(context_bits)
+                    unresolved_tokens.append(f"{context}: {normalized}" if context else normalized)
                 continue
             mapped_token = str(mapped)
             if mapped_token in seen:
@@ -95,24 +116,60 @@ def _remap_inline_citations(text: str, citation_map: Dict[str, int]) -> str:
     return CITATION_GROUP_PATTERN.sub(replace, text)
 
 
-def _remap_string_list(items: List[str], citation_map: Dict[str, int]) -> List[str]:
+def _remap_string_list(
+    items: List[str],
+    citation_map: Dict[str, int],
+    *,
+    unresolved_tokens: List[str] | None = None,
+    chapter_title: str = "",
+    field_name: str = "",
+) -> List[str]:
     remapped = []
     for item in items or []:
-        text = _remap_inline_citations(item, citation_map).strip()
+        text = _remap_inline_citations(
+            item,
+            citation_map,
+            unresolved_tokens=unresolved_tokens,
+            chapter_title=chapter_title,
+            field_name=field_name,
+        ).strip()
         if text:
             remapped.append(text)
     return remapped
 
 
-def _remap_export_text_fields(chapter_copy: Dict[str, Any], citation_map: Dict[str, int]) -> None:
+def _remap_export_text_fields(
+    chapter_copy: Dict[str, Any],
+    citation_map: Dict[str, int],
+    *,
+    unresolved_tokens: List[str] | None = None,
+) -> None:
+    chapter_title = str(chapter_copy.get("title", "Untitled Chapter"))
     for field in ("draft_text", "executive_takeaway"):
-        chapter_copy[field] = _remap_inline_citations(chapter_copy.get(field, ''), citation_map)
+        chapter_copy[field] = _remap_inline_citations(
+            chapter_copy.get(field, ''),
+            citation_map,
+            unresolved_tokens=unresolved_tokens,
+            chapter_title=chapter_title,
+            field_name=field,
+        )
 
     for field in ("retained_claims", "updated_claims", "new_claims", "open_questions"):
-        chapter_copy[field] = _remap_string_list(chapter_copy.get(field, []), citation_map)
+        chapter_copy[field] = _remap_string_list(
+            chapter_copy.get(field, []),
+            citation_map,
+            unresolved_tokens=unresolved_tokens,
+            chapter_title=chapter_title,
+            field_name=field,
+        )
 
 
-def normalize_report_citations(chapters: List[Dict]) -> tuple[List[Dict], List[Dict]]:
+def normalize_report_citations(
+    chapters: List[Dict],
+    *,
+    fail_on_unresolved: bool = True,
+    unresolved_token_sink: Optional[List[str]] = None,
+) -> tuple[List[Dict], List[Dict]]:
     """
     Produces a citation-normalized copy of the chapters and an ordered global bibliography.
     Chapter-local references are remapped to global indices and inline citations in draft_text
@@ -121,6 +178,7 @@ def normalize_report_citations(chapters: List[Dict]) -> tuple[List[Dict], List[D
     normalized_chapters = []
     ordered_refs = []
     global_ref_map = {}
+    unresolved_tokens: List[str] = []
 
     for chapter in chapters:
         chapter_copy = chapter.copy()
@@ -148,9 +206,24 @@ def normalize_report_citations(chapters: List[Dict]) -> tuple[List[Dict], List[D
             ref_copy['index'] = global_index
             normalized_refs.append(ref_copy)
 
-        _remap_export_text_fields(chapter_copy, local_to_global)
+        _remap_export_text_fields(
+            chapter_copy,
+            local_to_global,
+            unresolved_tokens=unresolved_tokens,
+        )
         chapter_copy['references'] = normalized_refs
         normalized_chapters.append(chapter_copy)
+
+    if unresolved_tokens and fail_on_unresolved:
+        samples = ", ".join(unresolved_tokens[:5])
+        if len(unresolved_tokens) > 5:
+            samples += ", ..."
+        raise ExportValidationError(
+            "Export blocked because citation normalization would drop unresolved tokens: "
+            f"{samples}"
+        )
+    if unresolved_tokens and unresolved_token_sink is not None:
+        unresolved_token_sink.extend(unresolved_tokens)
 
     return normalized_chapters, ordered_refs
 
@@ -225,6 +298,172 @@ def _visual_export_id(visual: Dict[str, Any], fallback: str) -> str:
         if token:
             return token
     return _normalize_marker_token(fallback) or 'visual'
+
+
+def _visual_caption_text(visual: Dict[str, Any]) -> str:
+    return (
+        " ".join(str(visual.get("title", "") or "").split())
+        or " ".join(str(visual.get("short_caption", "") or "").split())
+        or "Visual"
+    )
+
+
+def _visual_source_type(visual: Dict[str, Any]) -> str:
+    if visual.get("is_reused_visual") or visual.get("reuse_of_asset_id"):
+        return "reused_visual"
+    if str(visual.get("type", "")).strip().lower() == "graph":
+        return "updated_graph" if visual.get("original_asset_id") else "generated_graph"
+    if visual.get("original_asset_id"):
+        return "source_asset"
+    if visual.get("url"):
+        return "searched_image"
+    return str(visual.get("type", "")).strip().lower() or "visual"
+
+
+def _canonical_source_asset_id(visual: Dict[str, Any]) -> str:
+    for key in ("source_asset_id", "reuse_of_asset_id", "original_asset_id", "marker_id", "id"):
+        token = _normalize_marker_token(visual.get(key))
+        if token:
+            return token
+    return ""
+
+
+def _is_intentional_reuse(visual: Dict[str, Any]) -> bool:
+    return bool(
+        visual.get("is_reused_visual")
+        or visual.get("reuse_of_asset_id")
+        or str(visual.get("reuse_reason", "")).strip()
+    )
+
+
+def _file_content_hash(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _build_visual_manifest(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    manifest: List[Dict[str, Any]] = []
+
+    for chapter_index, chapter in enumerate(chapters, start=1):
+        visuals = chapter.get("approved_visuals", []) or []
+        lookup = _build_visual_lookup(visuals)
+        referenced_visual_ids: Dict[int, int] = {}
+        for marker_token in VISUAL_MARKER_PATTERN.findall(chapter.get("draft_text", "") or ""):
+            resolved = _resolve_visual(lookup, marker_token)
+            if resolved is None:
+                continue
+            referenced_visual_ids[id(resolved)] = referenced_visual_ids.get(id(resolved), 0) + 1
+
+        for visual in visuals:
+            path = str(visual.get("path", "") or "")
+            content_hash = _file_content_hash(path) if path and os.path.exists(path) else ""
+            manifest.append(
+                {
+                    "chapter_index": chapter_index,
+                    "chapter_title": chapter.get("title", f"Chapter {chapter_index}"),
+                    "marker_id": _normalize_marker_token(visual.get("marker_id")),
+                    "export_id": _visual_export_id(visual, chapter.get("title", "visual")),
+                    "caption": _visual_caption_text(visual),
+                    "type": str(visual.get("type", "")).strip().lower() or "visual",
+                    "source_type": _visual_source_type(visual),
+                    "path": path,
+                    "content_hash": content_hash,
+                    "original_asset_id": _normalize_marker_token(visual.get("original_asset_id")),
+                    "source_asset_id": _canonical_source_asset_id(visual),
+                    "reuse_of_asset_id": _normalize_marker_token(visual.get("reuse_of_asset_id")),
+                    "reuse_reason": " ".join(str(visual.get("reuse_reason", "") or "").split()),
+                    "is_reused_visual": bool(visual.get("is_reused_visual")),
+                    "text_reference_count": referenced_visual_ids.get(id(visual), 0),
+                    "source_url": str(visual.get("url", "") or ""),
+                }
+            )
+
+    return manifest
+
+
+def _collect_visual_manifest_issues(
+    manifest: List[Dict[str, Any]],
+    chapters: List[Dict[str, Any]],
+) -> List[str]:
+    issues: List[str] = []
+
+    for chapter_index, chapter in enumerate(chapters, start=1):
+        visuals = chapter.get("approved_visuals", []) or []
+        lookup = _build_visual_lookup(visuals)
+        for marker_token in VISUAL_MARKER_PATTERN.findall(chapter.get("draft_text", "") or ""):
+            normalized_marker = _normalize_marker_token(marker_token)
+            resolved = _resolve_visual(lookup, marker_token)
+            if resolved is None:
+                issues.append(
+                    f"{chapter.get('title', f'Chapter {chapter_index}')}: figure marker '{normalized_marker[:8]}' does not resolve to an approved visual."
+                )
+                continue
+            path = str(resolved.get("path", "") or "")
+            if not path or not os.path.exists(path):
+                issues.append(
+                    f"{chapter.get('title', f'Chapter {chapter_index}')}: figure marker '{normalized_marker[:8]}' resolves to a visual without an existing file."
+                )
+
+    for entry in manifest:
+        if not entry.get("path"):
+            issues.append(
+                f"{entry['chapter_title']}: approved visual '{entry['caption']}' is missing a resolved path."
+            )
+            continue
+        if not os.path.exists(entry["path"]):
+            issues.append(
+                f"{entry['chapter_title']}: approved visual '{entry['caption']}' points to a missing file."
+            )
+        if entry.get("text_reference_count", 0) <= 0:
+            issues.append(
+                f"{entry['chapter_title']}: approved visual '{entry['caption']}' is not referenced by any figure marker in the chapter text."
+            )
+
+    by_hash: Dict[str, List[Dict[str, Any]]] = {}
+    for entry in manifest:
+        digest = entry.get("content_hash")
+        if digest:
+            by_hash.setdefault(digest, []).append(entry)
+
+    for digest, entries in by_hash.items():
+        if len(entries) <= 1:
+            continue
+        captions = {_normalize_text_key(entry.get("caption")) for entry in entries}
+        source_ids = {entry.get("source_asset_id", "") for entry in entries if entry.get("source_asset_id")}
+        has_explicit_reuse = all(
+            entry.get("is_reused_visual") or entry.get("reuse_of_asset_id") or len(entries) == 1
+            for entry in entries[1:]
+        )
+        if len(captions) > 1 and not has_explicit_reuse:
+            issues.append(
+                "Accidental duplicate visual content detected for content hash "
+                f"{digest[:12]} across captions: {', '.join(sorted(entry.get('caption', '') for entry in entries))}."
+            )
+        elif len(entries) > 1 and len(source_ids) > 1 and not has_explicit_reuse:
+            issues.append(
+                "Duplicate visual content is reused across different source assets without explicit reuse metadata "
+                f"(hash {digest[:12]})."
+            )
+
+    return issues
+
+
+def _validate_visual_manifest(manifest: List[Dict[str, Any]], chapters: List[Dict[str, Any]]) -> None:
+    issues = _collect_visual_manifest_issues(manifest, chapters)
+    if issues:
+        raise ExportValidationError("Export blocked because visual validation failed: " + " | ".join(issues[:6]))
+
+
+def _write_visual_manifest(manifest: List[Dict[str, Any]], output_path: str) -> str:
+    directory = os.path.dirname(output_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, ensure_ascii=False, indent=2)
+    return output_path
 
 
 def _unique_ordered(items: List[str], limit: int = 10) -> List[str]:
@@ -683,10 +922,39 @@ class ReportBuilder:
         logger.info(f"DOCX saved in {time.time() - save_start:.2f}s.")
         return output_path
 
-def build_final_report(chapters: List[Dict], output_path: str = "Modernized_Report.docx", title: str = None, report_metadata: Dict | None = None) -> str:
+def build_final_report(
+    chapters: List[Dict],
+    output_path: str = "Modernized_Report.docx",
+    title: str = None,
+    report_metadata: Dict | None = None,
+    *,
+    strict: bool = True,
+    export_warnings: Optional[List[str]] = None,
+) -> str:
     report_title = title or "Modernized Industry Report"
     logger.info(f"Starting build_final_report for {len(chapters)} chapters. Title: '{report_title}'")
-    normalized_chapters, ordered_refs = normalize_report_citations(chapters)
+    unresolved_tokens: List[str] = []
+    normalized_chapters, ordered_refs = normalize_report_citations(
+        chapters,
+        fail_on_unresolved=strict,
+        unresolved_token_sink=unresolved_tokens if not strict else None,
+    )
+    manifest = _build_visual_manifest(normalized_chapters)
+    if strict:
+        _validate_visual_manifest(manifest, normalized_chapters)
+    else:
+        manifest_issues = _collect_visual_manifest_issues(manifest, normalized_chapters)
+        if unresolved_tokens and export_warnings is not None:
+            export_warnings.append(
+                "Citation normalization dropped unresolved tokens during best-effort DOCX export: "
+                + ", ".join(unresolved_tokens[:5])
+                + (", ..." if len(unresolved_tokens) > 5 else "")
+            )
+        if manifest_issues and export_warnings is not None:
+            export_warnings.append(
+                "Best-effort DOCX export continued with visual issues: "
+                + " | ".join(manifest_issues[:4])
+            )
     sections = synthesize_report_sections(normalized_chapters, report_title, report_metadata)
     include_front_matter = bool((report_metadata or {}).get("include_synthetic_front_matter"))
     builder = ReportBuilder(report_title)
@@ -701,13 +969,46 @@ def build_final_report(chapters: List[Dict], output_path: str = "Modernized_Repo
         builder.add_chapter(ch['title'], ch['draft_text'], ch.get('approved_visuals', []))
 
     builder.add_bibliography(ordered_refs, title=sections["titles"]["bibliography"])
-    
-    return builder.save(output_path)
 
-def build_markdown_report(chapters: List[Dict], output_path: str = "Modernized_Report.md", title: str = None, report_metadata: Dict | None = None) -> str:
+    saved_path = builder.save(output_path)
+    manifest_path = f"{os.path.splitext(saved_path)[0]}_visual_manifest.json"
+    _write_visual_manifest(manifest, manifest_path)
+    logger.info("Visual manifest saved to: %s", manifest_path)
+    return saved_path
+
+def build_markdown_report(
+    chapters: List[Dict],
+    output_path: str = "Modernized_Report.md",
+    title: str = None,
+    report_metadata: Dict | None = None,
+    *,
+    strict: bool = True,
+    export_warnings: Optional[List[str]] = None,
+) -> str:
     report_title = title or "Modernized Industry Report"
     logger.info(f"Starting build_markdown_report for {len(chapters)} chapters. Title: '{report_title}'")
-    normalized_chapters, ordered_refs = normalize_report_citations(chapters)
+    unresolved_tokens: List[str] = []
+    normalized_chapters, ordered_refs = normalize_report_citations(
+        chapters,
+        fail_on_unresolved=strict,
+        unresolved_token_sink=unresolved_tokens if not strict else None,
+    )
+    manifest = _build_visual_manifest(normalized_chapters)
+    if strict:
+        _validate_visual_manifest(manifest, normalized_chapters)
+    else:
+        manifest_issues = _collect_visual_manifest_issues(manifest, normalized_chapters)
+        if unresolved_tokens and export_warnings is not None:
+            export_warnings.append(
+                "Citation normalization dropped unresolved tokens during best-effort Markdown export: "
+                + ", ".join(unresolved_tokens[:5])
+                + (", ..." if len(unresolved_tokens) > 5 else "")
+            )
+        if manifest_issues and export_warnings is not None:
+            export_warnings.append(
+                "Best-effort Markdown export continued with visual issues: "
+                + " | ".join(manifest_issues[:4])
+            )
     sections = synthesize_report_sections(normalized_chapters, report_title, report_metadata)
     include_front_matter = bool((report_metadata or {}).get("include_synthetic_front_matter"))
 
@@ -718,6 +1019,8 @@ def build_markdown_report(chapters: List[Dict], output_path: str = "Modernized_R
     export_dir = f"{base_name}_export"
     images_dir = os.path.join(export_dir, "images")
     os.makedirs(images_dir, exist_ok=True)
+    manifest_path = os.path.join(export_dir, "visual_manifest.json")
+    _write_visual_manifest(manifest, manifest_path)
     
     output_md_path = os.path.join(export_dir, os.path.basename(output_path))
     
@@ -818,27 +1121,22 @@ def build_markdown_report(chapters: List[Dict], output_path: str = "Modernized_R
                 ref_line += f"  _({category})_"
             md_content.append(ref_line)
             
-    try:
-        with open(output_md_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(md_content))
-            
-        zip_output_path = f"{base_name}.zip"
-        with zipfile.ZipFile(zip_output_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            # Add markdown file
-            zipf.write(output_md_path, arcname=os.path.basename(output_md_path))
-            
-            # Add images
-            for root, _, files in os.walk(images_dir):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    arcname = f"images/{file}"
-                    zipf.write(file_path, arcname=arcname)
-                    
-        logger.info(f"Markdown report zipped and saved to: {zip_output_path}")
-        return zip_output_path
-    except Exception as e:
-        logger.error(f"Failed to generate Markdown report: {e}")
-        return output_path
+    with open(output_md_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(md_content))
+
+    zip_output_path = f"{base_name}.zip"
+    with zipfile.ZipFile(zip_output_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        zipf.write(output_md_path, arcname=os.path.basename(output_md_path))
+        zipf.write(manifest_path, arcname=os.path.basename(manifest_path))
+
+        for root, _, files in os.walk(images_dir):
+            for file in files:
+                file_path = os.path.join(root, file)
+                arcname = f"images/{file}"
+                zipf.write(file_path, arcname=arcname)
+
+    logger.info(f"Markdown report zipped and saved to: {zip_output_path}")
+    return zip_output_path
 
 if __name__ == "__main__":
     test_chapters = [

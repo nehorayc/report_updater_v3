@@ -2,6 +2,9 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from graph_update_helpers import graph_has_plottable_data as _shared_graph_has_plottable_data
+from graph_update_helpers import graph_update_validation_issues
+
 from logger_config import setup_logger
 
 logger = setup_logger("QualityGate")
@@ -109,6 +112,28 @@ def _approved_visual_ids(chapter: Dict[str, Any]) -> set[str]:
                 if len(value) > 8:
                     ids.add(value[:8])
     return ids
+
+
+def _coerce_graph_numeric_series(values: Any, target_len: int) -> List[float]:
+    if isinstance(values, list):
+        series = values[:target_len]
+    else:
+        series = [values]
+
+    if len(series) < target_len:
+        series = series + [0] * (target_len - len(series))
+
+    normalized: List[float] = []
+    for value in series[:target_len]:
+        try:
+            normalized.append(float(value) if value is not None else 0.0)
+        except (TypeError, ValueError):
+            normalized.append(0.0)
+    return normalized
+
+
+def _graph_has_plottable_data(visual: Dict[str, Any]) -> bool:
+    return _shared_graph_has_plottable_data(visual.get("data_points", {}))
 
 
 def _citation_numbers_in_text(text: str) -> set[int]:
@@ -374,6 +399,36 @@ def _chapter_issues(chapter: Dict[str, Any], start_year: Optional[int], end_year
         )
 
     approved_visual_ids = _approved_visual_ids(chapter)
+    for visual in chapter.get("approved_visuals", []):
+        if str(visual.get("type", "")).strip().lower() != "graph":
+            continue
+        graph_issues = graph_update_validation_issues(
+            visual,
+            update_end_year=end_year,
+            extracted_data_points=visual.get("extracted_data_points"),
+        )
+        if not graph_issues and _graph_has_plottable_data(visual):
+            continue
+        if not graph_issues:
+            graph_issues = [
+                {
+                    "code": "graph_missing_data_points",
+                    "message": "An approved graph does not contain plottable data points.",
+                }
+            ]
+
+        for graph_issue in graph_issues:
+            issues.append(
+                _issue(
+                    "error",
+                    graph_issue["code"],
+                    graph_issue["message"],
+                    hint="Regenerate the graph visual with corrected structured data or keep the original source figure instead.",
+                    context=_compact_context(visual.get("title", visual.get("short_caption", "Graph visual"))),
+                )
+            )
+        break
+
     for marker in FIGURE_MARKER_PATTERN.findall(draft_text):
         normalized_marker = _normalize_marker_token(marker)
         if normalized_marker not in approved_visual_ids and normalized_marker[:8] not in approved_visual_ids:

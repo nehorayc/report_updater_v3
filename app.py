@@ -57,6 +57,20 @@ from translator import translate_texts_batch
 from chapter_analyzer import analyze_chapters_batch
 from report_metadata_analyzer import infer_report_metadata
 from report_context import build_chapter_blueprint_defaults, build_prior_chapter_context
+from graph_question_discovery import (
+    discover_graphable_questions,
+    evaluate_graphable_question_candidates,
+)
+from graph_ranking import build_ranked_graph_candidate_groups
+from llm_client import (
+    get_api_key,
+    get_provider,
+    provider_display_name,
+    required_api_key_env,
+    selected_provider_model,
+)
+from llm_pricing import format_cost
+from llm_usage import export_usage_reports, get_usage_rows, reset_usage, summarize_usage
 
 # State Machine Constants
 STATE_UPLOAD_EXTRACT = "UPLOAD_AND_EXTRACT"
@@ -132,17 +146,52 @@ if "last_cleanup_result" not in st.session_state:
 if "allow_finalize_with_gate_errors" not in st.session_state:
     st.session_state.allow_finalize_with_gate_errors = False
 
+if "final_assembly_error" not in st.session_state:
+    st.session_state.final_assembly_error = None
+
+if "final_assembly_warnings" not in st.session_state:
+    st.session_state.final_assembly_warnings = []
+
 if "debug_mode" not in st.session_state:
     st.session_state.debug_mode = True
 
 if "ui_notices" not in st.session_state:
     st.session_state.ui_notices = []
 
+if "llm_provider" not in st.session_state:
+    st.session_state.llm_provider = get_provider()
+
+if "llm_usage_artifacts" not in st.session_state:
+    st.session_state.llm_usage_artifacts = {}
+
+os.environ["LLM_PROVIDER"] = st.session_state.llm_provider
+
 # --- Sidebar ---
 st.sidebar.title("Navigation")
 st.sidebar.info(
     f"Current Step: {STATE_DISPLAY_NAMES.get(st.session_state.current_state, st.session_state.current_state)}"
 )
+st.sidebar.divider()
+st.sidebar.subheader("LLM Settings")
+provider_options = ["gemini", "openai"]
+current_provider = st.session_state.get("llm_provider", get_provider())
+if current_provider not in provider_options:
+    current_provider = "gemini"
+provider_choice = st.sidebar.selectbox(
+    "Provider",
+    provider_options,
+    index=provider_options.index(current_provider),
+    format_func=lambda value: "OpenAI" if value == "openai" else "Gemini",
+)
+st.session_state.llm_provider = provider_choice
+os.environ["LLM_PROVIDER"] = provider_choice
+st.sidebar.caption(f"Model: {selected_provider_model()}")
+key_env_name = required_api_key_env()
+if get_api_key():
+    st.sidebar.success(f"{key_env_name} loaded")
+else:
+    st.sidebar.warning(f"{key_env_name} missing")
+
 if st.session_state.debug_mode:
     st.sidebar.divider()
     st.sidebar.subheader("Debug Controls")
@@ -163,11 +212,13 @@ if st.session_state.debug_mode:
 
 @st.dialog("API Key Required")
 def ask_for_api_key():
-    st.warning("GEMINI_API_KEY is not set. Please enter your Gemini API Key to continue.")
-    api_key = st.text_input("Gemini API Key", type="password")
+    key_env = required_api_key_env()
+    provider_name = provider_display_name()
+    st.warning(f"{key_env} is not set. Please enter your {provider_name} API key to continue.")
+    api_key = st.text_input(f"{provider_name} API Key", type="password")
     if st.button("Save"):
         if api_key.strip():
-            os.environ["GEMINI_API_KEY"] = api_key.strip()
+            os.environ[key_env] = api_key.strip()
             st.rerun()
         else:
             st.error("Please enter a valid API Key.")
@@ -277,6 +328,16 @@ def _quality_gate_block_message(result: dict) -> str:
         f"Final assembly is blocked by the quality gate ({errors} error(s), {warnings} warning(s)). "
         f"Review step 6 and fix or clean the blocking issues before exporting.{suffix}"
     )
+
+
+def _has_non_overridable_gate_issues(result: dict) -> bool:
+    for chapter in result.get("chapters", []):
+        for issue in chapter.get("issues", []):
+            if issue.get("severity") != "error":
+                continue
+            if issue.get("code") in NON_OVERRIDABLE_QUALITY_GATE_CODES:
+                return True
+    return False
 
 
 def _format_update_window(metadata):
@@ -391,6 +452,29 @@ def _canonical_visual_marker_id(visual) -> str:
     return normalized_visual_id or uuid.uuid4().hex
 
 
+def _apply_visual_resolution_metadata(visual, result):
+    if not isinstance(visual, dict) or not isinstance(result, dict):
+        return
+
+    visual["path"] = result["path"]
+    for key in (
+        "url",
+        "source_url",
+        "provider",
+        "query",
+        "selection_reason",
+        "content_hash",
+        "mime_type",
+        "width",
+        "height",
+        "aspect_ratio",
+        "filename",
+    ):
+        value = result.get(key)
+        if value not in (None, ""):
+            visual[key] = value
+
+
 def _rewrite_visual_markers(text: str, marker_ids: set[str], canonical_marker_id: str, caption: str) -> tuple[str, int]:
     if not text or not marker_ids or not canonical_marker_id:
         return text, 0
@@ -429,6 +513,64 @@ def _strip_export_visual_tokens(text: str, approved_visual_ids):
     cleaned = RAW_VISUAL_TOKEN_PATTERN.sub("", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
+
+
+_SKIP_GRAPH_OPTION = "__skip_graph__"
+
+
+def _graph_selection_key(chapter_index, slot_id):
+    return f"graph_pick_{chapter_index}_{slot_id}"
+
+
+def _graph_selection_options(group):
+    return [_SKIP_GRAPH_OPTION] + [candidate["id"] for candidate in group.get("shortlist", [])]
+
+
+def _graph_default_selection(group):
+    auto_selected = group.get("auto_select_candidate_id")
+    return auto_selected or _SKIP_GRAPH_OPTION
+
+
+def _find_graph_candidate(group, candidate_id):
+    for candidate in group.get("candidates", []):
+        if candidate.get("id") == candidate_id:
+            return candidate
+    return None
+
+
+def _graph_option_label(group, option_id):
+    if option_id == _SKIP_GRAPH_OPTION:
+        if group.get("selection_mode") == "review":
+            return "Skip for now (top candidate is below threshold)"
+        if group.get("selection_mode") == "skip":
+            return "Skip (no safe candidate)"
+        return "Do not include a graph"
+
+    candidate = _find_graph_candidate(group, option_id) or {}
+    scorecard = candidate.get("scorecard", {})
+    return (
+        f"#{candidate.get('rank', '?')} {candidate.get('variant_label', 'Graph')} "
+        f"| {scorecard.get('quality_band', 'Unscored')} "
+        f"| {scorecard.get('overall_score', 0.0):.2f}"
+    )
+
+
+def _ensure_graph_candidate_preview(candidate):
+    preview_path = candidate.get("preview_path") or candidate.get("path")
+    if preview_path and os.path.exists(preview_path):
+        return preview_path
+    if candidate.get("blocked"):
+        return None
+    if candidate.get("preview_error"):
+        return None
+
+    preview_result = generate_graph(candidate, output_dir=os.path.join(".tmp", "graph_candidate_previews"))
+    if "path" in preview_result:
+        candidate["preview_path"] = preview_result["path"]
+        return preview_result["path"]
+
+    candidate["preview_error"] = preview_result.get("error", "Preview generation failed")
+    return None
 
 
 def render_report_metadata_editor(key_prefix: str):
@@ -474,7 +616,7 @@ def main():
     )
     _render_ui_notices()
     
-    if not os.environ.get("GEMINI_API_KEY"):
+    if not get_api_key():
         ask_for_api_key()
         st.stop()
     
@@ -505,15 +647,11 @@ def main():
 def render_upload_extract():
     st.header("1. Upload Source Report")
     st.write("Upload a source PDF or DOCX. We will extract chapters, visuals, and baseline metadata after you confirm.")
+    st.caption("Report-wide dates, language, audience, and voice settings are configured later in Research Planning.")
 
     uploaded_file = st.file_uploader("Source Document", type=["pdf", "docx"])
 
     if uploaded_file:
-        report_metadata = render_report_metadata_editor("upload")
-        metadata_errors = _validate_report_metadata(report_metadata)
-        for error in metadata_errors:
-            st.error(error)
-
         if not os.path.exists(".tmp"):
             os.makedirs(".tmp")
         temp_path = os.path.join(".tmp", uploaded_file.name)
@@ -522,12 +660,12 @@ def render_upload_extract():
 
         if st.button("Extract Chapters & Visuals", type="primary"):
             _clear_ui_notices()
-            if metadata_errors:
-                logger.warning("Blocked document processing due to invalid report metadata.")
-                return
-
+            reset_usage()
+            st.session_state.llm_usage_artifacts = {}
+            st.session_state.llm_usage_export_base = None
             logger.info(f"User clicked 'Extract Chapters & Visuals' for file: {uploaded_file.name}")
             with st.spinner("Extracting text and media..."):
+                report_metadata = _get_report_metadata()
                 if uploaded_file.name.endswith(".pdf"):
                     results = extract_pdf_content(temp_path)
                 else:
@@ -578,7 +716,7 @@ def render_upload_extract():
                 total_ch = len(chapters_to_process)
                 analysis_by_id = {}
                 if chapters_to_process:
-                    status.text(f"Analyzing {total_ch} chapter(s) with Gemini...")
+                    status.text(f"Analyzing {total_ch} chapter(s) with {provider_display_name()}...")
                     analysis_by_id = analyze_chapters_batch(chapters_to_process)
 
                 for i, ch in enumerate(chapters_to_process):
@@ -694,7 +832,7 @@ def _render_asset_selection_legacy():
         _clear_ui_notices(source="vision")
         logger.info(f"User confirmed asset selection. Count: {len(st.session_state.selected_asset_ids)}")
         # Background: Analyze selected assets in batch
-        with st.status("Analyzing selected assets with Gemini Vision...") as status:
+        with st.status(f"Analyzing selected assets with {provider_display_name()} Vision...") as status:
             selected_assets = [a for a in st.session_state.assets if a['id'] in st.session_state.selected_asset_ids]
             
             if selected_assets:
@@ -730,6 +868,7 @@ def _render_asset_selection_legacy():
                         asset['description'] = res.get('dataset_description', '')
                         asset['type'] = res.get('type', 'image')
                         asset['update_query'] = res.get('suggested_update_query')
+                        asset['extracted_data_points'] = res.get('extracted_data_points')
                         
                         # Now, mark this information inside the chapter summaries
                         for chapter in st.session_state.chapters:
@@ -845,7 +984,7 @@ def render_asset_selection():
         _clear_ui_notices(source="vision")
         logger.info(f"User confirmed asset selection. Count: {len(st.session_state.selected_asset_ids)}")
 
-        with st.status("Analyzing selected assets with Gemini Vision...") as status:
+        with st.status(f"Analyzing selected assets with {provider_display_name()} Vision...") as status:
             selected_assets = [a for a in st.session_state.assets if a['id'] in st.session_state.selected_asset_ids]
 
             if selected_assets:
@@ -879,6 +1018,7 @@ def render_asset_selection():
                         asset['description'] = res.get('dataset_description', '')
                         asset['type'] = res.get('type', 'image')
                         asset['update_query'] = res.get('suggested_update_query')
+                        asset['extracted_data_points'] = res.get('extracted_data_points')
 
                         for chapter in st.session_state.chapters:
                             if 'asset_ids' in chapter and asset['id'] in chapter['asset_ids']:
@@ -1040,9 +1180,13 @@ def render_research_planning():
         f"Updating from {report_metadata['update_start_date'].isoformat()} to {report_metadata['update_end_date'].isoformat()} "
         f"based on an original report dated {report_metadata['original_report_date'].isoformat()}."
     )
-    st.info("Source chart and table update choices are handled in the previous step so this screen can stay focused on research planning.")
+    st.info(
+        "This is the only step where report-wide update settings are edited. "
+        "Source chart and table update choices are handled in the previous step so this screen can stay focused on research planning."
+    )
 
     to_remove = None
+    chapter_update_window = _format_update_window(report_metadata)
 
     for idx, chapter in enumerate(st.session_state.chapters):
         c_id = chapter.get('id', str(idx))
@@ -1066,7 +1210,16 @@ def render_research_planning():
                         st.write(", ".join(baseline['stats'][:6]))
 
             chapter['title'] = st.text_input("Chapter Title", value=chapter.get('title', ''), key=f"title_{c_id}")
-            chapter['content'] = st.text_area("Chapter Summary (AI Generated)", value=chapter.get('content', ''), height=200, key=f"content_{c_id}")
+            with st.expander("Optional Manual Chapter Notes", expanded=False):
+                st.caption(
+                    "Use this only if you want to override the auto-generated chapter summary or add extra planning context."
+                )
+                chapter['content'] = st.text_area(
+                    "Manual Summary / Notes",
+                    value=chapter.get('content', ''),
+                    height=200,
+                    key=f"content_{c_id}",
+                )
 
             st.divider()
 
@@ -1079,7 +1232,7 @@ def render_research_planning():
             if 'blueprint' not in chapter:
                 chapter['blueprint'] = {
                     "topic": default_blueprint.get("topic") or chapter['title'],
-                    "timeframe": _format_update_window(report_metadata),
+                    "timeframe": chapter_update_window,
                     "keywords": default_blueprint.get("keywords") or fallback_keywords,
                     "instructions": "",
                     "report_subject": default_blueprint.get("report_subject", ""),
@@ -1094,13 +1247,14 @@ def render_research_planning():
             blueprint['report_subject'] = default_blueprint.get("report_subject", blueprint.get("report_subject", ""))
             blueprint['source_chapter_title'] = default_blueprint.get("source_chapter_title", chapter['title'])
             blueprint['topic'] = st.text_input("Deep Research Topic", value=blueprint.get('topic', chapter['title']), key=f"topic_{c_id}")
-            blueprint['timeframe'] = st.text_input("Timeframe", value=blueprint.get('timeframe', _format_update_window(report_metadata)), key=f"time_{c_id}")
+            blueprint['timeframe'] = chapter_update_window
+            st.caption(f"Research window: {chapter_update_window}")
 
             kw_val = ", ".join(blueprint.get('keywords', []))
             kw_str = st.text_input("Search Keywords (comma separated)", value=kw_val, key=f"kw_{c_id}")
             blueprint['keywords'] = [k.strip() for k in kw_str.split(",") if k.strip()]
 
-            blueprint['instructions'] = st.text_area("Specific Writing Instructions", value=blueprint.get('instructions', ''), key=f"inst_{c_id}")
+            blueprint['instructions'] = st.text_area("Specific Writing Instructions (optional)", value=blueprint.get('instructions', ''), key=f"inst_{c_id}")
             blueprint['report_metadata'] = _serialize_report_metadata(report_metadata)
             blueprint['original_report_date'] = blueprint['report_metadata']['original_report_date']
             blueprint['update_start_date'] = blueprint['report_metadata']['update_start_date']
@@ -1109,7 +1263,7 @@ def render_research_planning():
             blueprint['target_audience'] = report_metadata.get('target_audience', 'General professional audience')
             blueprint['edition_title'] = report_metadata.get('edition_title') or st.session_state.original_report_name or ''
             blueprint['preserve_original_voice'] = report_metadata.get('preserve_original_voice', True)
-            blueprint['baseline_summary'] = baseline.get('summary', chapter.get('content', ''))
+            blueprint['baseline_summary'] = chapter.get('content', '') or baseline.get('summary', '')
             blueprint['baseline_claims'] = baseline.get('core_claims', [])
             blueprint['chapter_role'] = baseline.get('chapter_role', 'body')
 
@@ -1169,7 +1323,7 @@ def render_research_planning():
             "target_word_count": 500,
             "blueprint": {
                 "topic": "New Topic",
-                "timeframe": _format_update_window(report_metadata),
+                "timeframe": chapter_update_window,
                 "keywords": [],
                 "instructions": "",
                 "report_metadata": _serialize_report_metadata(report_metadata),
@@ -1209,6 +1363,13 @@ from research_agent import (
 )
 from writer_agent import write_chapter
 from quality_gate import clean_fixable_issues, evaluate_report_quality, has_blocking_issues
+
+NON_OVERRIDABLE_QUALITY_GATE_CODES = {
+    "broken_figure_marker",
+    "raw_visual_token",
+    "citation_reference_mismatch",
+    "graph_missing_data_points",
+}
 
 def render_draft_generation():
     st.header("5. Draft Generation")
@@ -1287,12 +1448,17 @@ def render_draft_generation():
                                 findings.extend(graph_findings)
 
             # 3. Write Chapter
+            graph_question_candidates = evaluate_graphable_question_candidates(findings, chapter['blueprint'])
+            graphable_questions = discover_graphable_questions(findings, chapter['blueprint'])
+            writing_blueprint = dict(chapter['blueprint'])
+            writing_blueprint['graphable_questions'] = graphable_questions
+
             writing_style = chapter.get('writing_style', 'Professional')
             prior_chapter_context = build_prior_chapter_context(st.session_state.chapters, idx)
             result = write_chapter(
                 chapter.get('original_full_text', chapter['content']), 
                 findings, 
-                chapter['blueprint'],
+                writing_blueprint,
                 writing_style=writing_style,
                 assets_to_update=assets_to_update,
                 prior_chapter_context=prior_chapter_context,
@@ -1374,6 +1540,15 @@ def render_draft_generation():
                 chapter['new_claims'] = result.get('new_claims', [])
                 chapter['open_questions'] = result.get('open_questions', [])
                 chapter['suggested_visuals'] = visual_suggestions
+                chapter['graph_question_candidates'] = graph_question_candidates
+                chapter['graphable_questions'] = graphable_questions
+                chapter['graph_candidate_groups'] = build_ranked_graph_candidate_groups(
+                    [visual for visual in visual_suggestions if str(visual.get("type", "")).strip().lower() == "graph"],
+                    chapter_title=chapter.get("title", ""),
+                    draft_text=draft_text,
+                    chapter_role=(chapter.get("blueprint") or {}).get("chapter_role", ""),
+                    graphable_questions=graphable_questions,
+                )
                 chapter['references'] = result.get('references', [])
             
         progress_bar.progress((idx + 1) / total)
@@ -1386,7 +1561,7 @@ def render_draft_generation():
 
 from graph_generator import generate_graph
 from image_search import search_and_download_image
-from doc_builder import build_final_report, build_markdown_report
+from doc_builder import ExportValidationError, build_final_report, build_markdown_report
 
 def render_quality_gate_results(result):
     if not result:
@@ -1448,13 +1623,9 @@ def render_quality_gate_results(result):
                     st.code(issue["context"], language="text")
 
     if summary.get("blocking"):
-        st.checkbox(
-            "Continue to final assembly even if blocking quality gate errors remain",
-            key="allow_finalize_with_gate_errors",
-            help="This keeps the issues visible, but it stops the UI from blocking final assembly.",
+        st.warning(
+            "Blocking quality-gate issues are still present. Final assembly will continue in best-effort mode and surface the affected visuals, graphs, or citations as warnings."
         )
-        if st.session_state.get("allow_finalize_with_gate_errors"):
-            st.warning("Final assembly will continue even if the quality gate still reports blocking errors.")
 
 
 def run_quality_gate():
@@ -1478,6 +1649,9 @@ def render_draft_verification():
             "new_claims",
             "open_questions",
             "suggested_visuals",
+            "graph_question_candidates",
+            "graphable_questions",
+            "graph_candidate_groups",
             "references",
             "approved_visuals",
         ):
@@ -1528,24 +1702,89 @@ def render_draft_verification():
             
             with col2:
                 st.subheader("Visual Approval")
-                if chapter.get('suggested_visuals'):
-                    # Separate suggestions
-                    updates = [v for v in chapter['suggested_visuals'] if v.get('original_asset_id') or v.get('action') == 'update']
-                    new_visuals = [v for v in chapter['suggested_visuals'] if v not in updates]
-                    
+                graph_candidate_groups = chapter.get("graph_candidate_groups") or []
+                non_graph_visuals = [
+                    visual
+                    for visual in chapter.get("suggested_visuals", [])
+                    if str(visual.get("type", "")).strip().lower() != "graph"
+                ]
+
+                if graph_candidate_groups:
+                    st.markdown("#### Ranked Graph Candidates")
+                    for group in graph_candidate_groups:
+                        with st.container(border=True):
+                            st.caption("Ranked against the nearby text, readability, and graph validity checks")
+                            st.write(f"**{group.get('title', 'Graph')}**")
+                            if group.get("description"):
+                                st.caption(group["description"])
+
+                            top_score = float(group.get("top_score", 0.0))
+                            quality_band = group.get("quality_band", "Blocked")
+                            selection_mode = group.get("selection_mode")
+                            if selection_mode == "auto":
+                                st.success(f"Top candidate is {quality_band.lower()} at {top_score:.2f} and is preselected.")
+                            elif selection_mode == "manual":
+                                st.info(f"Top candidate is {quality_band.lower()} at {top_score:.2f}. Review before export.")
+                            elif selection_mode == "review":
+                                st.warning(f"Top candidate is below the auto-include threshold at {top_score:.2f}.")
+                            else:
+                                st.warning("No safe graph candidate is ready for export yet.")
+
+                            selection_key = _graph_selection_key(idx, group["slot_id"])
+                            options = _graph_selection_options(group)
+                            default_option = st.session_state.get(selection_key, _graph_default_selection(group))
+                            if default_option not in options:
+                                default_option = _graph_default_selection(group)
+                            default_index = options.index(default_option)
+                            selected_candidate_id = st.radio(
+                                "Graph selection",
+                                options,
+                                index=default_index,
+                                key=selection_key,
+                                format_func=lambda option, current_group=group: _graph_option_label(current_group, option),
+                            )
+
+                            for candidate in group.get("shortlist", []):
+                                preview_col, details_col = st.columns([1, 2])
+                                with preview_col:
+                                    preview_path = _ensure_graph_candidate_preview(candidate)
+                                    if preview_path and os.path.exists(preview_path):
+                                        st.image(preview_path, use_container_width=True)
+                                    elif candidate.get("preview_error"):
+                                        st.caption(candidate["preview_error"])
+                                with details_col:
+                                    scorecard = candidate.get("scorecard", {})
+                                    st.write(f"**#{candidate.get('rank', '?')} {candidate.get('variant_label', 'Graph')}**")
+                                    st.caption(
+                                        "Overall "
+                                        f"{scorecard.get('quality_band', 'Unscored')} "
+                                        f"({scorecard.get('overall_score', 0.0):.2f})"
+                                    )
+                                    st.caption(
+                                        "Relevance "
+                                        f"{scorecard.get('text_relevance', 0.0):.2f} | "
+                                        f"Helpfulness {scorecard.get('analytical_help', 0.0):.2f} | "
+                                        f"Readability {scorecard.get('readability', 0.0):.2f}"
+                                    )
+                                    for reason in candidate.get("ranking_reasons", []):
+                                        st.markdown(f"- {reason}")
+                                    if candidate.get("id") == selected_candidate_id:
+                                        st.caption("Selected for export.")
+
+                if non_graph_visuals:
+                    updates = [v for v in non_graph_visuals if v.get('original_asset_id') or v.get('action') == 'update']
+                    new_visuals = [v for v in non_graph_visuals if v not in updates]
+
                     if updates:
                         st.markdown("#### Updates to Original Assets")
                         for v_idx, visual in enumerate(updates):
                             with st.container(border=True):
-                                # Source type badge
                                 v_type = visual.get('type', 'visual').lower()
-                                if v_type == 'graph':
-                                    st.caption("Graph generated from your data")
-                                elif v_type == 'image':
+                                if v_type == 'image':
                                     st.caption("Web image from DuckDuckGo search")
                                 else:
                                     st.caption(v_type.capitalize())
-                                
+
                                 st.write(f"**{visual.get('type', 'Visual').upper()}**: {visual.get('title', visual.get('description'))}")
                                 st.checkbox("Approve Update", value=True, key=f"app_upd_{idx}_{v_idx}")
 
@@ -1553,20 +1792,18 @@ def render_draft_verification():
                         st.markdown("#### New Suggestions")
                         for n_idx, visual in enumerate(new_visuals):
                             with st.container(border=True):
-                                # Source type badge
                                 v_type = visual.get('type', 'visual').lower()
-                                if v_type == 'graph':
-                                    st.caption("Graph generated from research data")
-                                elif v_type == 'image':
+                                if v_type == 'image':
                                     query = visual.get('query', visual.get('description', ''))
                                     st.caption(f"Web image from DuckDuckGo search: {query[:50]}")
                                 else:
                                     st.caption(v_type.capitalize())
-                                
+
                                 st.write(f"**{visual.get('type', 'Visual').upper()}**: {visual.get('title', visual.get('description'))}")
                                 st.caption(visual.get('description'))
                                 st.checkbox("Approve New Visual", key=f"app_new_{idx}_{n_idx}")
-                else:
+
+                if not graph_candidate_groups and not non_graph_visuals:
                     st.info("No updated or newly suggested visuals for this chapter.")
 
                 # Show original retained assets independent of above approvals.
@@ -1607,19 +1844,42 @@ def render_draft_verification():
         # Build approved_visuals from checkbox state for each chapter
         for idx, chapter in enumerate(st.session_state.chapters):
             chapter['approved_visuals'] = []
-            
+
+            graph_candidate_groups = chapter.get("graph_candidate_groups") or []
+            for group in graph_candidate_groups:
+                selected_candidate_id = st.session_state.get(
+                    _graph_selection_key(idx, group["slot_id"]),
+                    _graph_default_selection(group),
+                )
+                if selected_candidate_id == _SKIP_GRAPH_OPTION:
+                    continue
+                selected_candidate = _find_graph_candidate(group, selected_candidate_id)
+                if not selected_candidate:
+                    continue
+
+                approved_candidate = dict(selected_candidate)
+                preview_path = approved_candidate.get("preview_path")
+                if preview_path and os.path.exists(preview_path):
+                    approved_candidate["path"] = preview_path
+                chapter["approved_visuals"].append(approved_candidate)
+
             if 'suggested_visuals' in chapter:
-                updates = [v for v in chapter['suggested_visuals'] if v.get('original_asset_id') or v.get('action') == 'update']
-                new_visuals = [v for v in chapter['suggested_visuals'] if v not in updates]
-                
+                non_graph_visuals = [
+                    visual
+                    for visual in chapter['suggested_visuals']
+                    if str(visual.get("type", "")).strip().lower() != "graph"
+                ]
+                updates = [v for v in non_graph_visuals if v.get('original_asset_id') or v.get('action') == 'update']
+                new_visuals = [v for v in non_graph_visuals if v not in updates]
+
                 for v_idx, visual in enumerate(updates):
                     if st.session_state.get(f"app_upd_{idx}_{v_idx}", True):
                         chapter['approved_visuals'].append(visual)
-                
+
                 for n_idx, visual in enumerate(new_visuals):
                     if st.session_state.get(f"app_new_{idx}_{n_idx}", False):
                         chapter['approved_visuals'].append(visual)
-            
+
             # Add retained original assets
             if 'asset_ids' in chapter:
                 selected_original = [a for a in st.session_state.assets 
@@ -1651,90 +1911,178 @@ def render_draft_verification():
         quality_report = run_quality_gate()
         st.session_state.quality_gate_result = quality_report
         if has_blocking_issues(quality_report):
-            if not st.session_state.get("allow_finalize_with_gate_errors"):
-                logger.warning("Blocked final assembly due to quality gate errors.")
-                _queue_ui_notice("error", _quality_gate_block_message(quality_report), source="quality_gate")
-                st.rerun()
-            logger.warning("Continuing to final assembly despite blocking quality gate errors because override is enabled.")
+            logger.warning("Continuing to final assembly in best-effort mode despite quality gate issues.")
+            block_message = _quality_gate_block_message(quality_report)
+            if _has_non_overridable_gate_issues(quality_report):
+                block_message += " Best-effort export may omit unresolved visuals or drop invalid citations, but assembly will continue."
             _queue_ui_notice(
                 "warning",
-                "Continuing to final assembly despite blocking quality gate errors because the override is enabled.",
+                block_message,
                 source="quality_gate",
             )
 
         st.session_state.current_state = STATE_FINAL_ASSEMBLY
+        st.session_state.final_assembly_error = None
+        st.session_state.final_assembly_warnings = []
         st.rerun()
+
+
+def _save_llm_usage_artifacts(base_path_without_ext: str) -> dict:
+    if not base_path_without_ext:
+        return {}
+    try:
+        paths = export_usage_reports(base_path_without_ext)
+        st.session_state.llm_usage_artifacts = paths
+        return paths
+    except Exception as exc:
+        logger.error("Unable to save LLM usage artifacts: %s", exc, exc_info=True)
+        _queue_ui_notice("warning", f"Unable to save LLM usage report: {exc}", source="llm_usage")
+        return {}
+
+
+def _render_llm_usage_report() -> None:
+    rows = get_usage_rows()
+    summary = summarize_usage(rows)
+
+    st.subheader("LLM Usage & Estimated Cost")
+    if not rows:
+        st.info("No LLM calls have been recorded for this run yet.")
+        return
+
+    metric_cols = st.columns(5)
+    metric_cols[0].metric("Estimated Cost", format_cost(summary.get("estimated_cost_usd")))
+    metric_cols[1].metric("LLM Calls", summary.get("calls", 0))
+    metric_cols[2].metric("Input Tokens", f"{summary.get('input_tokens', 0):,}")
+    metric_cols[3].metric("Output Tokens", f"{summary.get('output_tokens', 0):,}")
+    metric_cols[4].metric("Total Tokens", f"{summary.get('total_tokens', 0):,}")
+
+    if summary.get("unknown_cost_calls"):
+        st.caption(
+            f"{summary['unknown_cost_calls']} successful call(s) used models without built-in pricing, "
+            "so the cost total is partial."
+        )
+
+    artifacts = st.session_state.get("llm_usage_artifacts") or {}
+    if artifacts:
+        st.caption(
+            "Usage artifacts saved: "
+            + ", ".join(os.path.basename(path) for path in artifacts.values() if path)
+        )
+
+    grouped_rows = []
+    for row in summary.get("by_group", []):
+        display_row = dict(row)
+        display_row["estimated_cost"] = format_cost(row.get("estimated_cost_usd"))
+        display_row.pop("estimated_cost_usd", None)
+        grouped_rows.append(display_row)
+    st.dataframe(grouped_rows, use_container_width=True, hide_index=True)
+
+    with st.expander("Per-call usage details"):
+        detail_rows = []
+        for row in rows:
+            display_row = dict(row)
+            display_row["estimated_cost"] = format_cost(row.get("estimated_cost_usd"))
+            display_row.pop("estimated_cost_usd", None)
+            detail_rows.append(display_row)
+        st.dataframe(detail_rows, use_container_width=True, hide_index=True)
+
 
 def render_final_assembly():
     st.header("7. Final Assembly")
     st.write("Producing visuals and constructing final document...")
     report_metadata = _serialize_report_metadata(_get_report_metadata())
-    
+
+    if st.session_state.get("final_assembly_error") and "final_doc_path" not in st.session_state:
+        st.error(st.session_state["final_assembly_error"])
+    elif st.session_state.get("final_assembly_warnings"):
+        st.warning("\n".join(st.session_state["final_assembly_warnings"][:6]))
+
     if "final_doc_path" not in st.session_state:
         with st.status("Generating visuals and building DOCX...") as status:
-            for chapter in st.session_state.chapters:
-                if 'approved_visuals' in chapter:
-                    retained_visuals = []
-                    dropped_visual_ids = set()
+            try:
+                final_assembly_warnings = []
+                for chapter in st.session_state.chapters:
+                    if 'approved_visuals' not in chapter:
+                        continue
                     for visual in chapter['approved_visuals']:
-                        # Skip if it's an original asset already on disk
                         if 'path' in visual and os.path.exists(visual['path']):
                             logger.info(f"Using existing visual path for {visual.get('original_asset_id', 'new')}")
-                            retained_visuals.append(visual)
+                            visual.pop("generation_error", None)
                             continue
 
                         status.update(label=f"Generating {visual['type']} for {chapter['title']}...")
                         if visual['type'] == 'graph':
                             res = generate_graph(visual)
                         else:
-                            # For suggestions, use the description or title as search query
                             query = visual.get('query') or visual.get('description') or visual.get('title')
                             res = search_and_download_image(query)
-                        
+
                         if 'path' in res:
-                            visual['path'] = res['path']
-                            retained_visuals.append(visual)
-                        else:
-                            logger.error(f"Failed to generate visual: {res.get('error')}")
-                            short_id = _visual_short_id(visual)
-                            if short_id:
-                                dropped_visual_ids.add(short_id)
+                            _apply_visual_resolution_metadata(visual, res)
+                            visual.pop("generation_error", None)
+                            continue
 
-                    chapter['approved_visuals'] = retained_visuals
-                    if dropped_visual_ids:
-                        chapter['draft_text'] = _strip_export_visual_tokens(
-                            chapter.get('draft_text', ''),
-                            _approved_visual_short_ids(chapter),
+                        failure_message = (
+                            f"{chapter.get('title', 'Untitled Chapter')}: "
+                            f"{visual.get('title', visual.get('short_caption', visual.get('type', 'visual')))} "
+                            f"failed - {res.get('error', 'unknown error')}"
                         )
-                        logger.warning(
-                            "Dropped failed visuals before export for chapter '%s': %s",
-                            chapter.get('title', 'Untitled Chapter'),
-                            ", ".join(sorted(dropped_visual_ids)),
-                        )
-            
-            status.update(label="Assembling DOCX...")
-            report_name = st.session_state.get('original_report_name') or 'Modernized_Report'
-            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            export_dir_base = "exports"
-            os.makedirs(export_dir_base, exist_ok=True)
-            output_filename = os.path.join(export_dir_base, f"{report_name}_{timestamp_str}.docx")
-            output_md_filename = os.path.join(export_dir_base, f"{report_name}_{timestamp_str}.md")
-            path = build_final_report(
-                st.session_state.chapters, 
-                output_filename,
-                title=report_name,
-                report_metadata=report_metadata,
-            )
-            st.session_state.final_doc_path = path
+                        visual["generation_error"] = res.get("error", "unknown error")
+                        final_assembly_warnings.append(f"Visual generation issue: {failure_message}")
+                        logger.error("Failed to generate visual: %s", failure_message)
 
-            status.update(label="Assembling Markdown...")
-            md_path = build_markdown_report(
-                st.session_state.chapters,
-                output_md_filename,
-                title=report_name,
-                report_metadata=report_metadata,
-            )
-            st.session_state.final_md_path = md_path
+                status.update(label="Assembling DOCX...")
+                report_name = st.session_state.get('original_report_name') or 'Modernized_Report'
+                timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                export_dir_base = "exports"
+                os.makedirs(export_dir_base, exist_ok=True)
+                output_filename = os.path.join(export_dir_base, f"{report_name}_{timestamp_str}.docx")
+                output_md_filename = os.path.join(export_dir_base, f"{report_name}_{timestamp_str}.md")
+                export_warnings: list[str] = []
+                path = build_final_report(
+                    st.session_state.chapters, 
+                    output_filename,
+                    title=report_name,
+                    report_metadata=report_metadata,
+                    strict=False,
+                    export_warnings=export_warnings,
+                )
+                st.session_state.final_doc_path = path
+
+                status.update(label="Assembling Markdown...")
+                md_path = build_markdown_report(
+                    st.session_state.chapters,
+                    output_md_filename,
+                    title=report_name,
+                    report_metadata=report_metadata,
+                    strict=False,
+                    export_warnings=export_warnings,
+                )
+                st.session_state.final_md_path = md_path
+                usage_export_base = os.path.splitext(output_filename)[0]
+                st.session_state.llm_usage_export_base = usage_export_base
+                _save_llm_usage_artifacts(usage_export_base)
+                st.session_state.final_assembly_error = None
+                st.session_state.final_assembly_warnings = final_assembly_warnings + export_warnings
+                if st.session_state.final_assembly_warnings:
+                    _queue_ui_notice(
+                        "warning",
+                        "Final assembly completed with best-effort warnings: "
+                        + " | ".join(st.session_state.final_assembly_warnings[:4]),
+                        source="final_assembly",
+                    )
+            except ExportValidationError as exc:
+                logger.error("Final assembly strict export failed unexpectedly: %s", exc)
+                status.update(label="Final assembly failed", state="error")
+                st.session_state.final_assembly_error = str(exc)
+                _queue_ui_notice("error", str(exc), source="final_assembly")
+                return
+            except Exception as exc:
+                logger.error("Final assembly failed unexpectedly: %s", exc, exc_info=True)
+                status.update(label="Final assembly failed", state="error")
+                st.session_state.final_assembly_error = f"Final assembly failed: {exc}"
+                _queue_ui_notice("error", f"Final assembly failed: {exc}", source="final_assembly")
+                return
 
     st.success("✅ Main Report (English) complete!")
     col1, col2 = st.columns(2)
@@ -1751,6 +2099,9 @@ def render_final_assembly():
             with open(md_file_path, "rb") as f:
                 md_bytes = f.read()
             st.download_button(btn_text, data=md_bytes, file_name=os.path.basename(md_file_path), type="secondary")
+
+    st.divider()
+    _render_llm_usage_report()
 
     st.divider()
     
@@ -1804,6 +2155,9 @@ def render_final_assembly():
                     report_metadata=report_metadata,
                 )
                 st.session_state.translated_reports[lang] = path
+
+            if st.session_state.get("llm_usage_export_base"):
+                _save_llm_usage_artifacts(st.session_state.llm_usage_export_base)
     
     if "translated_reports" in st.session_state:
         for lang, path in st.session_state.translated_reports.items():

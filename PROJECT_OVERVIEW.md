@@ -8,7 +8,7 @@ The system:
 - extracts chapters and embedded visuals from the source report
 - lets the user choose which original visuals to keep
 - lets the user decide which retained charts and tables should be updated or converted before drafting
-- analyzes selected visuals with Gemini Vision
+- analyzes selected visuals with Gemini or OpenAI vision-capable models
 - infers chapter metadata and update settings
 - performs fresh research from web, academic, and uploaded internal sources
 - rewrites each chapter as a new edition with inline citations
@@ -16,6 +16,7 @@ The system:
 - runs a quality gate before export
 - exports a polished DOCX and Markdown version
 - can optionally translate the final report into additional languages
+- shows and exports LLM calls, token usage, latency, and estimated cost
 
 This is not just a parser or summarizer. It is a report modernization pipeline.
 
@@ -30,7 +31,7 @@ The app is organized as a 7-step state machine in `app.py`.
 
 2. Source asset selection
    - The user reviews extracted visuals.
-   - Selected visuals are analyzed with Gemini Vision.
+   - Selected visuals are analyzed with the selected LLM provider.
    - The selected set becomes the pool of source visuals that can stay in the updated report.
 
 3. Source visual update planning
@@ -52,7 +53,7 @@ The app is organized as a 7-step state machine in `app.py`.
      - web research via DuckDuckGo
      - academic research via OpenAlex
      - internal search over uploaded reference docs
-   - Gemini rewrites each chapter into a new edition.
+   - The selected LLM provider rewrites each chapter into a new edition.
    - The response includes:
      - updated chapter text
      - citations
@@ -108,7 +109,7 @@ The repo is designed around a 3-layer model:
   - extracts DOCX chapters and images
 
 - `execution/vision_service.py`
-  - analyzes selected visuals with Gemini Vision
+  - analyzes selected visuals with the selected multimodal LLM provider
 
 - `execution/chapter_analyzer.py`
   - creates a baseline summary and metadata for each original chapter
@@ -120,7 +121,7 @@ The repo is designed around a 3-layer model:
   - orchestrates web, academic, and internal research
 
 - `execution/writer_agent.py`
-  - rewrites a chapter into an updated edition using Gemini
+  - rewrites a chapter into an updated edition using the selected LLM provider
 
 - `execution/graph_generator.py`
   - generates charts from approved visual suggestions
@@ -137,12 +138,18 @@ The repo is designed around a 3-layer model:
 - `execution/translator.py`
   - translates finalized chapter text into other languages
 
+- `execution/llm_client.py`
+  - routes LLM calls to Gemini or OpenAI while preserving a shared response contract
+
+- `execution/llm_usage.py`
+  - records calls, tokens, latency, and estimated costs for the UI/export usage report
+
 ## Inputs and outputs
 
 ### Inputs
 
 - source report: PDF or DOCX
-- Gemini API key
+- Gemini API key or OpenAI API key
 - optional reference documents: PDF, DOCX, TXT
 - user selections for visuals and research settings
 
@@ -151,17 +158,23 @@ The repo is designed around a 3-layer model:
 - final DOCX report in `exports/`
 - final Markdown export in `exports/`
 - optional translated DOCX files in `exports/`
+- LLM usage JSON/CSV files in `exports/`
 - temporary intermediate assets in `.tmp/`
 
 ## External services and dependencies
 
 The project depends on:
-- Gemini models for analysis, writing, vision, graph code generation, and translation
+- Gemini or OpenAI models for analysis, writing, vision, graph code generation, and translation
 - DuckDuckGo search for web and image discovery
 - OpenAlex for academic search
 - Python libraries such as Streamlit, python-docx, PyMuPDF, pdfplumber, requests, and matplotlib
 
-Without a valid `GEMINI_API_KEY`, core parts of the system will not work.
+`LLM_PROVIDER` controls which LLM backend is used. It defaults to `gemini` for backward compatibility.
+Gemini runs require `GEMINI_API_KEY`; OpenAI runs require `OPENAI_API_KEY` and default to
+`OPENAI_MODEL=gpt-5.4-mini` unless overridden.
+
+Each report run records LLM calls, token usage, latency, and estimated cost. The UI shows the report
+after final assembly, and JSON/CSV artifacts are saved next to the generated report.
 
 ## What is already implemented
 
@@ -173,6 +186,7 @@ The implemented code goes beyond the basic README description. In addition to th
 - quality gate and auto-cleanup before export
 - Markdown export packaging with images
 - optional translation of the finalized report
+- LLM usage reporting and export artifacts
 
 ## Practical summary for a future coding agent
 

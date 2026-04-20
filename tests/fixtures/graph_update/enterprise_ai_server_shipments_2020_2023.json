@@ -1,0 +1,9 @@
+{
+  "title": "Enterprise AI Server Shipments by Year",
+  "chart_type": "bar",
+  "data_points": {
+    "labels": ["2020", "2021", "2022", "2023"],
+    "values": [42, 58, 79, 101],
+    "unit": "Thousand Units"
+  }
+}

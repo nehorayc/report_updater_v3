@@ -7,7 +7,7 @@ To produce high-quality, relevant media (graphs and images) for the final report
 
 ### 1. Primary Method: LLM-Generated Matplotlib Code
 - Pass the `visual_dict` (title, description, data_points, chart_type) to `generate_graph_with_llm()`.
-- The function asks Gemini (`gemini-2.5-flash`) to write a self-contained Matplotlib script.
+- The function asks the selected LLM provider to write a self-contained Matplotlib script. Gemini runs use `gemini-2.5-flash`; OpenAI runs use `OPENAI_GRAPH_MODEL` or `OPENAI_MODEL`.
 - The code is `exec()`-ed in a restricted globals sandbox (only matplotlib, numpy, builtins).
 - Output file is saved to `.tmp/visuals/` at DPI=150.
 - **Advantage:** Any chart type (line, bar, pie, scatter), professional styling auto-chosen by the model.

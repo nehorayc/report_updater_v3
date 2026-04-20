@@ -40,5 +40,5 @@ To ensure the final exported DOCX is professional, readable, and structurally so
 - Filename: Preserve the original uploaded document's filename (e.g., `OriginalName.docx` and `OriginalName.zip`).
 - Must be valid OpenXML (.docx) format for the main report.
 - Markdown exports must be packaged as a ZIP containing the `.md` file and an `images/` directory to prevent broken links.
+- Save LLM usage telemetry beside the final export as `<report_name>_<timestamp>_llm_usage.json` and `<report_name>_<timestamp>_llm_usage.csv`. Do not insert the telemetry into the report body by default.
 - All temporary files in `.tmp/` must be cleaned up post-export (except for the final artifact).
-
