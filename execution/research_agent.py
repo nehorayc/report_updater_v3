@@ -685,6 +685,8 @@ def _source_quality(source: str) -> float:
         "internal": 0.85,
         "web": 0.7,
         "gemini": 0.35,
+        "openai": 0.35,
+        "llm": 0.35,
     }
     return mapping.get((source or "").lower(), 0.5)
 
@@ -819,7 +821,7 @@ def _split_reference_paragraphs(text: str) -> List[str]:
     return [part.strip() for part in re.split(r'(?<=[.!?])\s+', text or "") if len(part.strip()) >= 60]
 
 
-def _gemini_research_fallback(topic: str, keywords: List[str], start_year: Optional[int], end_year: Optional[int]) -> List[Dict]:
+def _llm_research_fallback(topic: str, keywords: List[str], start_year: Optional[int], end_year: Optional[int]) -> List[Dict]:
     logger.info("DDG yielded 0 results - using %s research fallback for: '%s'", provider_display_name(), topic)
     try:
         from dotenv import load_dotenv
@@ -862,7 +864,7 @@ Format as a numbered list. Be specific. Include real numbers, percentages, organ
                     "title": title,
                     "snippet": snippet,
                     "url": None,
-                    "source": "gemini",
+                    "source": provider_display_name().lower(),
                     "published_date": None,
                 })
 
@@ -1155,7 +1157,7 @@ def perform_comprehensive_research(blueprint: Dict) -> List[Dict]:
             en_topic,
             provider_display_name(),
         )
-        all_findings.extend(_gemini_research_fallback(en_topic, en_keywords, window.get('start_year'), window.get('end_year')))
+        all_findings.extend(_llm_research_fallback(en_topic, en_keywords, window.get('start_year'), window.get('end_year')))
 
     logger.info(f"Comprehensive research complete. Total findings: {len(all_findings)}")
 

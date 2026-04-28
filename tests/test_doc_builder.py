@@ -114,6 +114,49 @@ def test_docx_export_embeds_visual_assets(tmp_path: Path, report_metadata, sampl
     assert "relationships/image" in rels_xml
 
 
+def test_exports_include_external_image_attribution(tmp_path: Path, report_metadata, sample_visual):
+    visual = dict(sample_visual)
+    visual.update(
+        {
+            "provider": "pexels",
+            "photographer_name": "Alex Smith",
+            "source": "Pexels",
+            "source_url": "https://www.pexels.com/photo/robotics-lab-123/",
+            "license_label": "Pexels License",
+            "attribution_text": "Photo by Alex Smith on Pexels",
+        }
+    )
+    chapter = {
+        "title": "Attributed Visual Chapter",
+        "draft_text": "[Figure abcdef12: Dummy Visual]",
+        "approved_visuals": [visual],
+        "references": [],
+    }
+
+    markdown_zip = build_markdown_report(
+        [chapter],
+        output_path=str(tmp_path / "attributed.md"),
+        title="Attributed Report",
+        report_metadata=report_metadata,
+    )
+    with zipfile.ZipFile(markdown_zip) as archive:
+        md_name = next(name for name in archive.namelist() if name.endswith(".md"))
+        markdown_text = archive.read(md_name).decode("utf-8")
+
+    assert "Figure: Dummy Visual - Photo by Alex Smith on Pexels" in markdown_text
+
+    docx_path = build_final_report(
+        [chapter],
+        output_path=str(tmp_path / "attributed.docx"),
+        title="Attributed Report",
+        report_metadata=report_metadata,
+    )
+    with zipfile.ZipFile(docx_path) as archive:
+        document_xml = archive.read("word/document.xml").decode("utf-8")
+
+    assert "Figure: Dummy Visual - Photo by Alex Smith on Pexels" in document_xml
+
+
 def test_exports_omit_synthetic_front_matter_by_default(tmp_path: Path, report_metadata):
     chapter = {
         "title": "Background",
@@ -238,6 +281,46 @@ def test_exports_emit_visual_manifests(tmp_path: Path, report_metadata, sample_v
     assert manifest_path.exists()
     docx_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert docx_manifest[0]["caption"] == "Dummy Visual"
+
+
+def test_visual_manifest_marks_prepared_source_graph_refreshes_as_updated_graph(tmp_path: Path, report_metadata):
+    updated_graph_path = tmp_path / "updated-graph.png"
+    Image.new("RGB", (320, 240), color="royalblue").save(updated_graph_path)
+
+    chapter = {
+        "title": "Quantitative Analysis",
+        "draft_text": "[Figure feed2023aa1111111111111111111111: Updated Enterprise AI Graph]",
+        "approved_visuals": [
+            {
+                "id": "feed2023aa1111111111111111111111__line_linear",
+                "marker_id": "feed2023aa1111111111111111111111",
+                "original_asset_id": "feed2023aa1111111111111111111111",
+                "type": "graph",
+                "path": str(updated_graph_path),
+                "title": "Updated Enterprise AI Graph",
+                "short_caption": "Updated Enterprise AI Graph",
+                "data_points": {
+                    "labels": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+                    "values": [42, 58, 79, 101, 120, 185, 260],
+                    "unit": "Thousand Units",
+                },
+            }
+        ],
+        "references": [],
+    }
+
+    markdown_zip = build_markdown_report(
+        [chapter],
+        output_path=str(tmp_path / "updated-graph.md"),
+        title="Updated Graph Report",
+        report_metadata=report_metadata,
+    )
+    with zipfile.ZipFile(markdown_zip) as archive:
+        manifest = json.loads(archive.read("visual_manifest.json").decode("utf-8"))
+
+    assert len(manifest) == 1
+    assert manifest[0]["source_type"] == "updated_graph"
+    assert manifest[0]["original_asset_id"] == "feed2023aa1111111111111111111111"
 
 
 def test_export_blocks_when_citation_normalization_would_drop_tokens(tmp_path: Path, report_metadata):

@@ -17,6 +17,7 @@ load_dotenv()
 
 from logger_config import setup_logger
 from graph_update_helpers import (
+    chart_has_mixed_dataset_units,
     graph_has_plottable_data,
     graph_update_validation_issues,
     normalize_chart_series,
@@ -27,7 +28,7 @@ logger = setup_logger("GraphGenerator")
 
 # Professional color palette for static fallback
 _CORP_COLORS = ['#2563EB', '#16A34A', '#DC2626', '#D97706', '#7C3AED', '#0891B2']
-_SUPPORTED_STATIC_CHART_TYPES = {'bar', 'line', 'pie'}
+_SUPPORTED_STATIC_CHART_TYPES = {'bar', 'line', 'pie', 'horizontal_bar', 'stacked_bar', 'area'}
 
 # Apply professional style to static charts
 try:
@@ -105,10 +106,15 @@ def _normalized_graph_payload(visual_dict: dict):
 def _should_use_static_first(visual_dict: dict) -> bool:
     normalized = _normalized_graph_payload(visual_dict)
     chart_type = str(visual_dict.get("chart_type") or "bar").lower()
+    data_points = visual_dict.get("data_points", {}) or {}
 
     if chart_type not in _SUPPORTED_STATIC_CHART_TYPES:
         return False
     if not normalized:
+        return False
+    if chart_type == "area" and normalized[3]:
+        return False
+    if chart_has_mixed_dataset_units(data_points):
         return False
     if not _has_plottable_data(visual_dict):
         return False
@@ -137,6 +143,7 @@ def generate_graph_with_llm(visual_dict: dict, output_dir: str = ".tmp/visuals")
     description = visual_dict.get("description", "")
     data = visual_dict.get("data_points", {})
     chart_type = visual_dict.get("chart_type", "bar")
+    mixed_dataset_units = chart_has_mixed_dataset_units(data)
 
     def _build_prompt(previous_code: str = "") -> str:
         retry_note = ""
@@ -149,6 +156,12 @@ Previous (broken) code:
 {previous_code}
 
 """
+        unit_guidance = ""
+        if mixed_dataset_units:
+            unit_guidance = (
+                "12. The data contains multiple series with different units. Use separate y-axes when appropriate "
+                "so all series remain legible and correctly labeled.\n"
+            )
         return f"""{retry_note}Write a self-contained Python script using Matplotlib that creates a professional chart.
 
 Chart details:
@@ -170,6 +183,7 @@ REQUIREMENTS:
 9. Call plt.close() at the end.
 10. Do NOT use plt.show().
 11. Choose the best chart type for the data (line for trends, bar for comparisons, pie for proportions, etc.)
+{unit_guidance}
 
 Respond with ONLY the executable Python code. No explanations, no markdown fences.
 """
@@ -245,31 +259,52 @@ def _generate_static_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") 
         fig, ax = plt.subplots(figsize=(12, 7))
         x_positions = list(range(len(labels)))
         flattened_values = [float(value) for series_values in values_by_series.values() for value in series_values]
+        colors = [_CORP_COLORS[index % len(_CORP_COLORS)] for index in range(len(labels))]
 
         # --- Bug 6 fix: route by chart_type ---
 
-        # Handle multi-series bar/line charts.
-        if multi_series and chart_type in {"bar", "line"}:
+        # Handle multi-series line and grouped/stacked bar charts.
+        if multi_series and chart_type in {"bar", "line", "stacked_bar", "horizontal_bar"}:
             import numpy as np
             x = np.arange(len(labels))
             num_series = max(len(values_by_series), 1)
             width = 0.8 / num_series
-            multiplier = 0
+            if chart_type == "stacked_bar":
+                bottoms = [0.0] * len(labels)
+                for idx, (attribute, measurement) in enumerate(values_by_series.items()):
+                    color = _CORP_COLORS[idx % len(_CORP_COLORS)]
+                    measurement = [float(value) for value in measurement]
+                    ax.bar(x, measurement, 0.7, label=attribute, color=color, bottom=bottoms)
+                    bottoms = [bottom + value for bottom, value in zip(bottoms, measurement)]
+                ax.set_xticks(x)
+                ax.set_xticklabels(labels, rotation=45, ha='right')
+                ax.legend(loc='upper left')
+            elif chart_type == "horizontal_bar":
+                cumulative = [0.0] * len(labels)
+                for idx, (attribute, measurement) in enumerate(values_by_series.items()):
+                    color = _CORP_COLORS[idx % len(_CORP_COLORS)]
+                    measurement = [float(value) for value in measurement]
+                    ax.barh(x, measurement, label=attribute, color=color, left=cumulative)
+                    cumulative = [start + value for start, value in zip(cumulative, measurement)]
+                ax.set_yticks(x)
+                ax.set_yticklabels(labels)
+                ax.legend(loc='lower right')
+            else:
+                multiplier = 0
+                for idx, (attribute, measurement) in enumerate(values_by_series.items()):
+                    offset = width * multiplier
+                    color = _CORP_COLORS[idx % len(_CORP_COLORS)]
+                    measurement = [float(value) for value in measurement]
 
-            for idx, (attribute, measurement) in enumerate(values_by_series.items()):
-                offset = width * multiplier
-                color = _CORP_COLORS[idx % len(_CORP_COLORS)]
-                measurement = [float(value) for value in measurement]
+                    if chart_type == "line":
+                        ax.plot(x, measurement, marker='o', label=attribute, color=color, linewidth=2)
+                    else:
+                        ax.bar(x + offset, measurement, width, label=attribute, color=color)
+                    multiplier += 1
 
-                if chart_type == "line":
-                    ax.plot(x, measurement, marker='o', label=attribute, color=color, linewidth=2)
-                else:
-                    ax.bar(x + offset, measurement, width, label=attribute, color=color)
-                multiplier += 1
-
-            ax.set_xticks(x + width * (num_series - 1) / 2 if chart_type != "line" else x)
-            ax.set_xticklabels(labels, rotation=45, ha='right')
-            ax.legend(loc='upper left')
+                ax.set_xticks(x + width * (num_series - 1) / 2 if chart_type != "line" else x)
+                ax.set_xticklabels(labels, rotation=45, ha='right')
+                ax.legend(loc='upper left')
 
         elif chart_type == "pie":
             if multi_series:
@@ -282,7 +317,6 @@ def _generate_static_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") 
                 )
             else:
                 float_vals = [float(value) for value in next(iter(values_by_series.values()))]
-            colors = _CORP_COLORS[:len(labels)]
             ax.pie(float_vals, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
             ax.axis('equal')
 
@@ -293,10 +327,28 @@ def _generate_static_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") 
             ax.set_xticklabels(labels, rotation=45 if len(labels) > 4 else 0, ha='right')
             ax.fill_between(x_positions, float_vals, alpha=0.1, color=_CORP_COLORS[0])
 
+        elif chart_type == "area":
+            float_vals = [float(value) for value in next(iter(values_by_series.values()))]
+            ax.plot(x_positions, float_vals, color=_CORP_COLORS[0], linewidth=2.0)
+            ax.fill_between(x_positions, float_vals, alpha=0.35, color=_CORP_COLORS[0])
+            ax.set_xticks(x_positions)
+            ax.set_xticklabels(labels, rotation=45 if len(labels) > 4 else 0, ha='right')
+
+        elif chart_type == "horizontal_bar":
+            float_vals = [float(value) for value in next(iter(values_by_series.values()))]
+            ax.barh(x_positions, float_vals, color=colors)
+            ax.set_yticks(x_positions)
+            ax.set_yticklabels(labels)
+
+        elif chart_type == "stacked_bar":
+            float_vals = [float(value) for value in next(iter(values_by_series.values()))]
+            ax.bar(x_positions, float_vals, color=colors)
+            ax.set_xticks(x_positions)
+            ax.set_xticklabels(labels, rotation=45 if len(labels) > 4 else 0, ha='right')
+
         else:
             # Default: bar chart (single series)
             float_vals = [float(value) for value in next(iter(values_by_series.values()))]
-            colors = _CORP_COLORS[:len(labels)]
             ax.bar(x_positions, float_vals, color=colors)
             ax.set_xticks(x_positions)
             ax.set_xticklabels(labels, rotation=45 if len(labels) > 4 else 0, ha='right')
@@ -305,14 +357,22 @@ def _generate_static_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") 
         if chart_type != "pie":
             y_axis_label = unit
             if y_axis_scale == "log" and flattened_values and all(value > 0 for value in flattened_values):
-                ax.set_yscale("log")
+                if chart_type == "horizontal_bar":
+                    ax.set_xscale("log")
+                else:
+                    ax.set_yscale("log")
                 if y_axis_label:
                     y_axis_label = f"{y_axis_label} (log scale)"
                 else:
                     y_axis_label = "Log scale"
-            if y_axis_label:
-                ax.set_ylabel(y_axis_label)
-            ax.grid(axis='y', linestyle='--', alpha=0.7)
+            if chart_type == "horizontal_bar":
+                if y_axis_label:
+                    ax.set_xlabel(y_axis_label)
+                ax.grid(axis='x', linestyle='--', alpha=0.7)
+            else:
+                if y_axis_label:
+                    ax.set_ylabel(y_axis_label)
+                ax.grid(axis='y', linestyle='--', alpha=0.7)
         plt.tight_layout()
 
         filename = f"graph_{uuid.uuid4().hex}.png"
@@ -378,6 +438,12 @@ def generate_graph(visual_dict: dict, output_dir: str = ".tmp/visuals") -> dict:
 
     llm_result = generate_graph_with_llm(visual_dict, output_dir)
     if "path" in llm_result:
+        return llm_result
+    if chart_has_mixed_dataset_units(visual_dict.get("data_points", {}) or {}):
+        logger.warning(
+            "Skipping static fallback for '%s' because mixed-unit datasets require LLM rendering.",
+            visual_dict.get("title"),
+        )
         return llm_result
     logger.warning(f"LLM graph failed ({llm_result.get('error')}), falling back to static chart.")
     return _generate_static_graph(visual_dict, output_dir)

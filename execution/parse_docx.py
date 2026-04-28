@@ -8,6 +8,26 @@ import time
 
 logger = setup_logger("DocxParser")
 
+
+def _normalize_context_excerpt(texts: List[str], *, max_chars: int = 900) -> str:
+    merged = " ".join(" ".join(str(text or "").split()) for text in texts if str(text or "").strip()).strip()
+    if len(merged) <= max_chars:
+        return merged
+    return merged[: max_chars - 1].rstrip() + "…"
+
+
+def _paragraph_window_excerpt(paragraphs: List[Any], center_index: int, *, radius: int = 2) -> str:
+    candidate_texts: List[str] = []
+    start = max(0, center_index - radius)
+    end = min(len(paragraphs), center_index + radius + 1)
+    for index in range(start, end):
+        text = " ".join(str(paragraphs[index].text or "").split()).strip()
+        if not text:
+            continue
+        if text not in candidate_texts:
+            candidate_texts.append(text)
+    return _normalize_context_excerpt(candidate_texts)
+
 def extract_docx_content(file_path: str, output_dir: str = ".tmp/assets") -> Dict[str, Any]:
     """
     Extracts text and images from a DOCX file.
@@ -39,8 +59,9 @@ def extract_docx_content(file_path: str, output_dir: str = ".tmp/assets") -> Dic
 
     # Track distinct assets globally
     distinct_assets = {}
+    paragraphs = list(doc.paragraphs)
 
-    for para_idx, para in enumerate(doc.paragraphs):
+    for para_idx, para in enumerate(paragraphs):
         # Check for heading
         if para.style.name.startswith('Heading') or para.style.name == 'Title':
             if current_chapter["content"].strip() or current_chapter["asset_ids"]:
@@ -74,6 +95,12 @@ def extract_docx_content(file_path: str, output_dir: str = ".tmp/assets") -> Dic
                                 "type": "image",
                                 "path": saved_path
                             }
+                            source_context_excerpt = _paragraph_window_excerpt(paragraphs, para_idx)
+                            if source_context_excerpt:
+                                distinct_assets[asset_id]["source_context_excerpt"] = source_context_excerpt
+                                distinct_assets[asset_id]["source_context_strategy"] = "paragraph_window"
+                            if current_chapter.get("title"):
+                                distinct_assets[asset_id]["source_context_heading"] = current_chapter["title"]
 
     # Add the last chapter
     if current_chapter["content"].strip() or current_chapter["asset_ids"]:

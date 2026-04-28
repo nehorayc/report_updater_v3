@@ -76,6 +76,36 @@ def test_generate_graph_handles_dataset_style_series(monkeypatch, tmp_path: Path
     assert Path(result["path"]).exists()
 
 
+def test_generate_graph_prefers_llm_for_mixed_unit_dataset_series(monkeypatch, tmp_path: Path):
+    calls = {"llm": 0}
+    llm_path = tmp_path / "dual-axis.png"
+    llm_path.write_bytes(b"png")
+
+    def fake_llm(*args, **kwargs):
+        calls["llm"] += 1
+        return {"path": str(llm_path), "filename": llm_path.name}
+
+    monkeypatch.setattr(graph_generator, "generate_graph_with_llm", fake_llm)
+
+    result = generate_graph(
+        {
+            "title": "Mixed Units",
+            "chart_type": "line",
+            "data_points": {
+                "labels": ["2024", "2025", "2026"],
+                "datasets": [
+                    {"label": "Count", "values": [320, 410, 438], "unit": "Count"},
+                    {"label": "Share", "values": [0.225, 0.24, 0.255], "unit": "%"},
+                ],
+            },
+        },
+        output_dir=str(tmp_path),
+    )
+
+    assert calls["llm"] == 1
+    assert result["path"] == str(llm_path)
+
+
 def test_generate_graph_returns_error_for_missing_data(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(graph_generator, "generate_graph_with_llm", lambda *args, **kwargs: {"error": "skip"})
 
@@ -154,6 +184,52 @@ def test_generate_graph_skips_llm_for_simple_structured_chart(monkeypatch, tmp_p
             "title": "Static First",
             "chart_type": "bar",
             "data_points": {"labels": ["A", "B"], "values": [3, 5]},
+        },
+        output_dir=str(tmp_path),
+    )
+
+    assert "path" in result
+    assert Path(result["path"]).exists()
+
+
+@pytest.mark.parametrize("chart_type", ["horizontal_bar", "area"])
+def test_generate_graph_supports_additional_static_chart_types(monkeypatch, tmp_path: Path, chart_type: str):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("LLM path should not be used for supported static chart types")
+
+    monkeypatch.setattr(graph_generator, "generate_graph_with_llm", fail_if_called)
+
+    result = generate_graph(
+        {
+            "title": f"Static {chart_type}",
+            "chart_type": chart_type,
+            "data_points": {"labels": ["Alpha", "Beta", "Gamma"], "values": [3, 5, 8]},
+        },
+        output_dir=str(tmp_path),
+    )
+
+    assert "path" in result
+    assert Path(result["path"]).exists()
+
+
+def test_generate_graph_supports_static_stacked_bar(monkeypatch, tmp_path: Path):
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("LLM path should not be used for supported stacked bar charts")
+
+    monkeypatch.setattr(graph_generator, "generate_graph_with_llm", fail_if_called)
+
+    result = generate_graph(
+        {
+            "title": "Static stacked bar",
+            "chart_type": "stacked_bar",
+            "data_points": {
+                "labels": ["2024", "2025", "2026"],
+                "values": {
+                    "Research": [10, 12, 14],
+                    "Commercial": [4, 7, 9],
+                },
+                "unit": "Count",
+            },
         },
         output_dir=str(tmp_path),
     )

@@ -140,6 +140,149 @@ def test_ranked_graph_candidates_attach_best_graphable_question():
     assert group["shortlist"][0]["blocked"] is False
 
 
+def test_ranked_graph_candidates_include_area_for_trends():
+    group = build_ranked_graph_candidate_group(
+        {
+            "id": "trendslot111111111111111111111111",
+            "marker_id": "trendslot111111111111111111111111",
+            "type": "graph",
+            "title": "Annual research growth",
+            "description": "Research output by year.",
+            "chart_type": "line",
+            "data_points": {
+                "labels": ["2021", "2022", "2023", "2024"],
+                "values": [12, 18, 27, 39],
+                "unit": "Count",
+            },
+        },
+        chapter_title="Research Activity",
+        draft_text="[Figure trendslot111111111111111111111111: Annual research growth]",
+        chapter_role="quantitative analysis",
+        graphable_questions=[
+            {
+                "graph_question_id": "gq_1",
+                "question_text": "How has annual research growth changed from 2021 to 2024?",
+                "question_type": "trend",
+                "candidate_metric": "Annual research growth",
+                "preferred_chart_families": ["line", "area", "bar"],
+                "graphable": True,
+            }
+        ],
+    )
+
+    variant_keys = {candidate["variant_key"] for candidate in group["candidates"]}
+    assert "area_linear" in variant_keys
+    assert len(group["shortlist"]) <= 4
+
+
+def test_ranked_graph_candidates_prefer_horizontal_bar_for_long_labels():
+    group = build_ranked_graph_candidate_group(
+        {
+            "id": "comparelong1111111111111111111111",
+            "marker_id": "comparelong1111111111111111111111",
+            "graph_question_id": "gq_1",
+            "type": "graph",
+            "title": "Long category comparison",
+            "description": "Compare results across verbose category names.",
+            "chart_type": "bar",
+            "data_points": {
+                "labels": [
+                    "Extremely long category label alpha",
+                    "Extremely long category label beta",
+                    "Extremely long category label gamma",
+                ],
+                "values": [21, 18, 13],
+                "unit": "Count",
+            },
+        },
+        chapter_title="Comparison",
+        draft_text="[Figure comparelong1111111111111111111111: Long category comparison]",
+        chapter_role="quantitative analysis",
+        graphable_questions=[
+            {
+                "graph_question_id": "gq_1",
+                "question_text": "How do the compared categories differ?",
+                "question_type": "comparison",
+                "candidate_metric": "Compared categories",
+                "preferred_chart_families": ["horizontal_bar", "bar", "line"],
+                "graphable": True,
+            }
+        ],
+    )
+
+    assert group["shortlist"][0]["chart_type"] == "horizontal_bar"
+
+
+def test_ranked_graph_candidates_include_stacked_bar_for_multi_series_composition():
+    group = build_ranked_graph_candidate_group(
+        {
+            "id": "stackslot11111111111111111111111",
+            "marker_id": "stackslot11111111111111111111111",
+            "type": "graph",
+            "title": "Project mix by year",
+            "description": "Distribution of projects by year.",
+            "chart_type": "bar",
+            "data_points": {
+                "labels": ["2023", "2024", "2025"],
+                "values": {
+                    "Pilot": [4, 6, 8],
+                    "Production": [2, 4, 7],
+                },
+                "unit": "Count",
+            },
+        },
+        chapter_title="Portfolio Mix",
+        draft_text="[Figure stackslot11111111111111111111111: Project mix by year]",
+        chapter_role="quantitative analysis",
+        graphable_questions=[
+            {
+                "graph_question_id": "gq_1",
+                "question_text": "How is the project mix distributed across categories?",
+                "question_type": "composition",
+                "candidate_metric": "Project mix",
+                "preferred_chart_families": ["stacked_bar", "pie", "bar"],
+                "graphable": True,
+            }
+        ],
+    )
+
+    variant_keys = {candidate["variant_key"] for candidate in group["candidates"]}
+    assert "stacked_bar_linear" in variant_keys
+
+
+def test_prepared_source_graph_refreshes_auto_select_when_valid():
+    group = build_ranked_graph_candidate_group(
+        {
+            "id": "feed2023aa1111111111111111111111",
+            "marker_id": "feed2023aa1111111111111111111111",
+            "original_asset_id": "feed2023aa1111111111111111111111",
+            "type": "graph",
+            "title": "Enterprise AI server shipments by year",
+            "description": "Preserved history through 2023 and extended through 2026.",
+            "chart_type": "line",
+            "prepared_source_graph_refresh": True,
+            "update_end_date": "2026-03-22",
+            "extracted_data_points": {
+                "labels": ["2020", "2021", "2022", "2023"],
+                "values": [42, 58, 79, 101],
+                "unit": "Thousand Units",
+            },
+            "data_points": {
+                "labels": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+                "values": [42, 58, 79, 101, 120, 185, 260],
+                "unit": "Thousand Units",
+            },
+        },
+        chapter_title="Quantitative Analysis",
+        draft_text="[Figure feed2023aa1111111111111111111111: Enterprise AI server shipments by year]",
+        chapter_role="quantitative analysis",
+    )
+
+    assert group["selection_mode"] == "auto"
+    assert group["auto_select_candidate_id"] == group["recommended_candidate_id"]
+    assert group["shortlist"][0]["blocked"] is False
+
+
 def test_ranked_graph_candidates_block_graphs_without_vetted_question_match():
     group = build_ranked_graph_candidate_group(
         {

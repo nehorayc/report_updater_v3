@@ -169,11 +169,11 @@ def _question_type_from_text(text: str, years: List[int], numeric_count: int, pe
 
 def _preferred_chart_families(question_type: str) -> List[str]:
     if question_type == "trend":
-        return ["line", "bar"]
+        return ["line", "area", "bar"]
     if question_type == "comparison":
-        return ["bar", "line"]
+        return ["horizontal_bar", "bar", "line"]
     if question_type == "composition":
-        return ["pie", "bar"]
+        return ["stacked_bar", "pie", "bar"]
     return ["bar", "line"]
 
 

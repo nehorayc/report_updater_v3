@@ -76,7 +76,7 @@ def test_openai_text_request_maps_to_responses_api(monkeypatch):
     assert captured["model"] == "gpt-5.4-mini"
     assert captured["input"] == "Return JSON."
     assert captured["text"] == {"format": {"type": "json_object"}}
-    assert captured["temperature"] == 0.2
+    assert "temperature" not in captured
     assert captured["reasoning"] == {"effort": "low"}
 
     rows = get_usage_rows()
@@ -119,6 +119,41 @@ def test_openai_multimodal_contents_are_converted(monkeypatch):
     assert message["content"][0] == {"type": "input_text", "text": "Analyze this."}
     assert message["content"][1]["type"] == "input_image"
     assert message["content"][1]["image_url"].startswith("data:image/png;base64,")
+
+
+def test_openai_retries_without_unsupported_temperature(monkeypatch):
+    reset_usage()
+    calls = []
+
+    class FakeResponses:
+        def create(self, **kwargs):
+            calls.append(dict(kwargs))
+            if "temperature" in kwargs:
+                raise RuntimeError("Unsupported parameter: 'temperature' is not supported with this model.")
+            return SimpleNamespace(model=kwargs["model"], output_text='{"ok": true}', usage=None)
+
+    class FakeOpenAI:
+        def __init__(self, *, api_key):
+            self.responses = FakeResponses()
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+
+    response = llm_client.generate_content(
+        api_key="openai-key",
+        model="gpt-4.1-mini",
+        contents="Return JSON.",
+        response_mime_type="application/json",
+        temperature=0.2,
+        operation="test.openai_temperature_retry",
+    )
+
+    assert response.text == '{"ok": true}'
+    assert len(calls) == 2
+    assert calls[0]["temperature"] == 0.2
+    assert "temperature" not in calls[1]
+    assert len(get_usage_rows()) == 1
+    assert get_usage_rows()[0]["success"] is True
 
 
 def test_gemini_usage_metadata_is_recorded(monkeypatch):

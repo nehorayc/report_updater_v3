@@ -39,3 +39,41 @@ def test_analyze_batch_assets_uses_chart_sidecar_data_points(monkeypatch):
     assert extracted["labels"] == ["2020", "2021", "2022", "2023"]
     assert extracted["values"] == [42, 58, 79, 101]
     assert extracted["unit"] == "Thousand Units"
+
+
+def test_analyze_batch_assets_unwraps_provider_object_and_fills_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    vision_service.reset_runtime_diagnostics()
+
+    class FakeResponse:
+        text = json.dumps(
+            {
+                "analysis": [
+                    {
+                        "id": "asset-one_chart42",
+                        "type": "image",
+                        "short_caption": "First selected source visual",
+                        "dataset_description": "A valid analysis for the first selected visual.",
+                        "suggested_update_query": None,
+                        "extracted_data_points": None,
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(vision_service, "gemini_generate_content", lambda **kwargs: FakeResponse())
+
+    asset_path = tmp_path / "source_visual.png"
+    asset_path.write_bytes((FIXTURE_DIR / "enterprise_ai_server_shipments_2020_2023.png").read_bytes())
+    results = vision_service.analyze_batch_assets(
+        [
+            {"id": "asset-one", "path": str(asset_path)},
+            {"id": "asset-two", "path": str(asset_path)},
+        ]
+    )
+
+    assert [result["id"] for result in results] == ["asset-one", "asset-two"]
+    assert results[0]["short_caption"] == "First selected source visual"
+    assert results[1]["short_caption"] == "Error analyzing image."
+    diagnostics = vision_service.consume_runtime_diagnostics()
+    assert any("fewer usable asset results" in item["message"] for item in diagnostics)

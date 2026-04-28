@@ -160,6 +160,30 @@ def test_translate_terms_to_english_batches_hebrew_terms(monkeypatch):
     assert translations[hebrew_regulation] == "regulation"
 
 
+def test_llm_research_fallback_labels_selected_provider(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+
+    class FakeResponse:
+        text = """
+        1. DNA storage deployment roadmap
+        Vendors reported new archival storage pilots in 2025.
+        """
+
+    def fake_generate_content(*, api_key, model, contents, response_mime_type=None, temperature=None):
+        assert api_key == "test-openai-key"
+        assert model == "gpt-5.4-mini"
+        assert "DNA storage" in contents
+        return FakeResponse()
+
+    monkeypatch.setattr(research_agent, "gemini_generate_content", fake_generate_content)
+
+    findings = research_agent._llm_research_fallback("DNA storage", ["archival"], 2024, 2026)
+
+    assert findings
+    assert findings[0]["source"] == "openai"
+
+
 def test_search_web_uses_query_cache(monkeypatch):
     research_agent._WEB_SEARCH_CACHE.clear()
     research_agent._ARTICLE_TEXT_CACHE.clear()

@@ -81,6 +81,7 @@ def _safe_int(value: Any) -> int:
 def summarize_usage(rows: Iterable[Dict[str, Any]] | None = None) -> Dict[str, Any]:
     usage_rows = list(rows) if rows is not None else get_usage_rows()
     total_cost = 0.0
+    has_known_cost = False
     unknown_cost_calls = 0
     groups: Dict[tuple[str, str, str], Dict[str, Any]] = {}
 
@@ -121,7 +122,7 @@ def summarize_usage(rows: Iterable[Dict[str, Any]] | None = None) -> Dict[str, A
                 "output_tokens": 0,
                 "total_tokens": 0,
                 "latency_seconds": 0.0,
-                "estimated_cost_usd": 0.0,
+                "estimated_cost_usd": None,
                 "unknown_cost_calls": 0,
             },
         )
@@ -140,12 +141,15 @@ def summarize_usage(rows: Iterable[Dict[str, Any]] | None = None) -> Dict[str, A
             if row.get("success"):
                 grouped["unknown_cost_calls"] += 1
         else:
+            has_known_cost = True
+            if grouped["estimated_cost_usd"] is None:
+                grouped["estimated_cost_usd"] = 0.0
             grouped["estimated_cost_usd"] = round(
                 grouped["estimated_cost_usd"] + float(row["estimated_cost_usd"]),
                 8,
             )
 
-    summary["estimated_cost_usd"] = round(total_cost, 8)
+    summary["estimated_cost_usd"] = round(total_cost, 8) if has_known_cost or not unknown_cost_calls else None
     summary["unknown_cost_calls"] = unknown_cost_calls
     summary["by_group"] = sorted(
         groups.values(),

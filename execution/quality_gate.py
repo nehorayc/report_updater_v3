@@ -2,8 +2,11 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from graph_update_helpers import graph_has_plottable_data as _shared_graph_has_plottable_data
-from graph_update_helpers import graph_update_validation_issues
+from graph_update_helpers import (
+    GRAPH_UPDATE_STATUS_NO_NEW_DATA,
+    graph_has_plottable_data as _shared_graph_has_plottable_data,
+    graph_update_validation_issues,
+)
 
 from logger_config import setup_logger
 
@@ -95,11 +98,28 @@ def _time_window(report_metadata: Dict[str, Any]) -> tuple[Optional[int], Option
     return start_year, end_year
 
 
+def _update_window_label(report_metadata: Dict[str, Any]) -> str:
+    start_year, end_year = _time_window(report_metadata)
+    return f"{start_year}-{end_year}" if start_year else str(end_year)
+
+
 def _split_paragraphs(text: str) -> List[str]:
     paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text or "") if part.strip()]
     if paragraphs:
         return paragraphs
     return [line.strip() for line in (text or "").splitlines() if line.strip()]
+
+
+def _top_issue_snippets(result: Dict[str, Any], limit: int = 2) -> List[str]:
+    snippets: List[str] = []
+    for chapter in result.get("chapters", []):
+        for issue in chapter.get("issues", []):
+            chapter_title = chapter.get("chapter_title", "Untitled")
+            message = issue.get("message", "")
+            snippets.append(f"{chapter_title}: {message}")
+            if len(snippets) >= limit:
+                return snippets
+    return snippets
 
 
 def _approved_visual_ids(chapter: Dict[str, Any]) -> set[str]:
@@ -399,6 +419,26 @@ def _chapter_issues(chapter: Dict[str, Any], start_year: Optional[int], end_year
         )
 
     approved_visual_ids = _approved_visual_ids(chapter)
+    for refresh in chapter.get("source_graph_refreshes", []) or []:
+        if str(refresh.get("graph_update_status", "")).strip().lower() != GRAPH_UPDATE_STATUS_NO_NEW_DATA:
+            continue
+
+        asset_id = _normalize_marker_token(refresh.get("asset_id"))[:8]
+        short_caption = str(refresh.get("short_caption", "") or "Source graph").strip()
+        reason = str(refresh.get("update_reason", "") or "").strip()
+        issues.append(
+            _issue(
+                "warning",
+                "graph_update_no_new_data",
+                (
+                    f"Figure {asset_id or 'source'} ({short_caption}) kept the original graph because no "
+                    "credible new datapoints were found for the requested update window."
+                ),
+                hint=reason or "Review the original figure if an updated graph is still required.",
+                context=short_caption,
+            )
+        )
+
     for visual in chapter.get("approved_visuals", []):
         if str(visual.get("type", "")).strip().lower() != "graph":
             continue
@@ -731,6 +771,56 @@ def clean_fixable_issues(chapters: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def build_quality_gate_cleanup_failure_result(exc: Exception) -> Dict[str, Any]:
+    return {
+        "summary": {
+            "changed_chapters": 0,
+            "fixes_applied": 0,
+            "runtime_error": True,
+            "runtime_error_type": type(exc).__name__,
+            "runtime_error_message": str(exc),
+        },
+        "chapters": [],
+    }
+
+
+def build_quality_gate_runtime_report(
+    report_metadata: Dict[str, Any],
+    exc: Exception,
+    *,
+    phase: str = "evaluation",
+) -> Dict[str, Any]:
+    phase_label = str(phase or "evaluation").strip() or "evaluation"
+    issue = _issue(
+        "warning",
+        "quality_gate_runtime_error",
+        f"Quality gate {phase_label} failed internally and was bypassed.",
+        hint="Review the logs if you want to debug the gate itself. Final assembly can continue in best-effort mode.",
+        context=_compact_context(f"{type(exc).__name__}: {exc}"),
+    )
+    return {
+        "summary": {
+            "error_count": 0,
+            "warning_count": 1,
+            "blocking": False,
+            "update_window": _update_window_label(report_metadata),
+            "auto_fixable_count": 0,
+            "by_code": {"quality_gate_runtime_error": 1},
+            "runtime_error": True,
+            "runtime_error_phase": phase_label,
+            "runtime_error_type": type(exc).__name__,
+            "runtime_error_message": str(exc),
+        },
+        "chapters": [
+            {
+                "chapter_index": 0,
+                "chapter_title": "Quality Gate Runtime",
+                "issues": [issue],
+            }
+        ],
+    }
+
+
 def evaluate_report_quality(chapters: List[Dict[str, Any]], report_metadata: Dict[str, Any]) -> Dict[str, Any]:
     start_year, end_year = _time_window(report_metadata)
     chapter_results = []
@@ -759,7 +849,7 @@ def evaluate_report_quality(chapters: List[Dict[str, Any]], report_metadata: Dic
             "error_count": error_count,
             "warning_count": warning_count,
             "blocking": error_count > 0,
-            "update_window": f"{start_year}-{end_year}" if start_year else str(end_year),
+            "update_window": _update_window_label(report_metadata),
             "auto_fixable_count": auto_fixable_count,
             "by_code": by_code,
         },
@@ -792,3 +882,42 @@ def evaluate_report_quality(chapters: List[Dict[str, Any]], report_metadata: Dic
 
 def has_blocking_issues(result: Dict[str, Any]) -> bool:
     return bool(result.get("summary", {}).get("blocking"))
+
+
+def final_assembly_gate_decision(result: Dict[str, Any]) -> Dict[str, Any]:
+    summary = result.get("summary", {})
+    errors = int(summary.get("error_count", 0) or 0)
+    warnings = int(summary.get("warning_count", 0) or 0)
+
+    if summary.get("runtime_error"):
+        phase = summary.get("runtime_error_phase", "evaluation")
+        return {
+            "should_block": False,
+            "notice_level": "warning",
+            "message": (
+                f"Quality gate {phase} failed internally and was bypassed. "
+                "Final assembly will continue in best-effort mode."
+            ),
+        }
+
+    if not errors:
+        return {
+            "should_block": False,
+            "notice_level": None,
+            "message": "",
+        }
+
+    suffix = ""
+    snippets = _top_issue_snippets(result)
+    if snippets:
+        suffix = f" Top issue: {' | '.join(snippets)}"
+
+    return {
+        "should_block": False,
+        "notice_level": "warning",
+        "message": (
+            f"Quality gate found {errors} error(s) and {warnings} warning(s). "
+            "Final assembly will continue in best-effort mode; review step 6 if you want to clean the flagged issues before export."
+            f"{suffix}"
+        ),
+    }

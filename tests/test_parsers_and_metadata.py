@@ -46,6 +46,10 @@ def test_extract_docx_content_pulls_chapters_and_assets(sample_docx_path: Path, 
     assert parsed["chapters"][0]["title"] == "Chapter One"
     assert parsed["assets"]
     assert "[Asset:" in parsed["chapters"][0]["content"]
+    asset = parsed["assets"][0]
+    assert asset["source_context_strategy"] == "paragraph_window"
+    assert asset["source_context_heading"] == "Chapter One"
+    assert "AI adoption accelerated in 2024" in asset["source_context_excerpt"]
 
 
 def test_extract_pdf_content_reads_heading_and_body(sample_pdf_path: Path, tmp_path: Path):
@@ -77,6 +81,37 @@ def test_extract_pdf_content_preserves_soft_mask_transparency(tmp_path: Path):
     extracted_image = Image.open(extracted_path).convert("RGBA")
     assert extracted_image.getpixel((0, 0))[3] == 0
     assert extracted_image.getpixel((110, 60))[3] > 0
+
+
+def test_extract_pdf_content_collects_nearby_image_context(tmp_path: Path, dummy_image_path: Path):
+    pdf_path = tmp_path / "contextual_figure.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Quantitative Analysis", fontsize=24)
+    page.insert_text((72, 116), "Annual Articles on Technology", fontsize=18)
+    page.insert_textbox(
+        fitz.Rect(72, 138, 520, 210),
+        "Field below refers to total aggregated number of articles associated with the OECD research area boxes.",
+        fontsize=10,
+    )
+    page.insert_image(fitz.Rect(72, 228, 292, 360), filename=str(dummy_image_path))
+    page.insert_textbox(
+        fitz.Rect(72, 372, 520, 450),
+        "The chart should be read together with the field-share line because both count and share rise through the period.",
+        fontsize=10,
+    )
+    doc.save(pdf_path)
+    doc.close()
+
+    parsed = extract_pdf_content(str(pdf_path), output_dir=str(tmp_path / "pdf_assets"))
+
+    assert parsed["assets"]
+    asset = parsed["assets"][0]
+    assert asset["source_context_strategy"] == "page_excerpt"
+    assert asset["source_context_page"] == 1
+    assert asset["source_context_heading"] == "Annual Articles on Technology"
+    assert "OECD research area boxes" in asset["source_context_excerpt"]
+    assert "field-share line" in asset["source_context_excerpt"]
 
 
 def test_extract_pdf_content_uses_printed_toc_for_top_level_chapters(tmp_path: Path):

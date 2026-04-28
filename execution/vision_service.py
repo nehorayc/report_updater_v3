@@ -4,6 +4,7 @@ from pathlib import Path
 import time
 from dotenv import load_dotenv
 from typing import Any, Dict, List, Optional
+from llm_json_utils import try_parse_json
 from llm_client import (
     generate_content as gemini_generate_content,
     get_api_key,
@@ -287,6 +288,104 @@ def _fallback_result_for_failed_asset(asset: Dict[str, Any]) -> Dict[str, Any]:
 
     return fallback
 
+
+def _analysis_items_from_response(parsed: Any) -> List[Dict[str, Any]]:
+    """Normalize provider JSON into a list of per-asset analysis objects."""
+    if isinstance(parsed, list):
+        return [item for item in parsed if isinstance(item, dict)]
+
+    if not isinstance(parsed, dict):
+        return []
+
+    for key in ("analysis", "results", "items", "assets", "images"):
+        value = parsed.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+
+    if parsed.get("id"):
+        return [parsed]
+
+    return []
+
+
+def _canonical_asset_id(result_id: Any, asset_lookup: Dict[str, Dict[str, Any]]) -> Optional[str]:
+    raw_id = str(result_id or "").strip()
+    if not raw_id:
+        return None
+    if raw_id in asset_lookup:
+        return raw_id
+
+    normalized = "".join(ch for ch in raw_id.lower() if ch.isalnum())
+    if not normalized:
+        return None
+
+    for asset_id in asset_lookup:
+        asset_key = "".join(ch for ch in str(asset_id).lower() if ch.isalnum())
+        if normalized == asset_key:
+            return asset_id
+        if len(normalized) >= 8 and asset_key.startswith(normalized):
+            return asset_id
+        if len(asset_key) >= 8 and normalized.startswith(asset_key):
+            return asset_id
+
+    return None
+
+
+def _normalize_chunk_results(
+    parsed: Any,
+    *,
+    chunk: List[Dict[str, Any]],
+    asset_lookup: Dict[str, Dict[str, Any]],
+    api_key: str,
+) -> List[Dict[str, Any]]:
+    items = _analysis_items_from_response(parsed)
+    normalized_by_id: Dict[str, Dict[str, Any]] = {}
+    unknown_count = 0
+
+    for item in items:
+        canonical_id = _canonical_asset_id(item.get("id"), asset_lookup)
+        if not canonical_id:
+            unknown_count += 1
+            continue
+        if canonical_id in normalized_by_id:
+            logger.warning("Duplicate vision analysis result for asset %s; keeping the first result.", canonical_id)
+            continue
+
+        normalized_item = dict(item)
+        normalized_item["id"] = canonical_id
+        normalized_by_id[canonical_id] = _augment_analysis_result_with_chart_data(
+            result=normalized_item,
+            asset_lookup=asset_lookup,
+            api_key=api_key,
+        )
+
+    if unknown_count:
+        logger.warning("Ignored %s vision analysis result(s) with unknown or missing asset IDs.", unknown_count)
+
+    chunk_results: List[Dict[str, Any]] = []
+    missing_ids: List[str] = []
+    for asset in chunk:
+        asset_id = str(asset.get("id", ""))
+        if asset_id in normalized_by_id:
+            chunk_results.append(normalized_by_id[asset_id])
+        else:
+            missing_ids.append(asset_id)
+            chunk_results.append(_fallback_result_for_failed_asset(asset))
+
+    if missing_ids:
+        logger.warning(
+            "Vision analysis omitted %s selected asset(s); using fallback analysis for: %s",
+            len(missing_ids),
+            ", ".join(asset_id[:8] for asset_id in missing_ids if asset_id),
+        )
+        _record_runtime_diagnostic(
+            "warning",
+            "Vision analysis returned fewer usable asset results than requested. Placeholder captions were used for omitted selected visuals.",
+        )
+
+    return chunk_results
+
+
 def analyze_batch_assets(assets: List[Dict]) -> List[Dict]:
     """
     Uses the selected multimodal LLM provider to analyze a batch of images.
@@ -357,31 +456,16 @@ def analyze_batch_assets(assets: List[Dict]) -> List[Dict]:
             text = response.text.strip()
             logger.debug(f"Raw response: {text[:200]}...")
 
-            parsed = json.loads(text)
-            if isinstance(parsed, list):
-                augmented = [
-                    _augment_analysis_result_with_chart_data(
-                        result=item,
-                        asset_lookup=asset_lookup,
-                        api_key=api_key,
-                    )
-                    if isinstance(item, dict)
-                    else item
-                    for item in parsed
-                ]
-                results.extend(augmented)
-                logger.info(f"Successfully parsed {len(parsed)} results from chunk.")
-            else:
-                 # Fallback if model returns single object instead of list
-                 if isinstance(parsed, dict):
-                     parsed = _augment_analysis_result_with_chart_data(
-                         result=parsed,
-                         asset_lookup=asset_lookup,
-                         api_key=api_key,
-                     )
-                 results.append(parsed)
-                 logger.info("Successfully parsed 1 result from chunk (fallback).")
-                 
+            parsed = try_parse_json(text)
+            chunk_results = _normalize_chunk_results(
+                parsed,
+                chunk=chunk,
+                asset_lookup=asset_lookup,
+                api_key=api_key,
+            )
+            results.extend(chunk_results)
+            logger.info("Successfully parsed %s usable result(s) from chunk.", len(chunk_results))
+
         except Exception as e:
             logger.error(f"Error in batch analysis for chunk {i//chunk_size + 1}: {e}", exc_info=True)
             if _is_quota_error(e):

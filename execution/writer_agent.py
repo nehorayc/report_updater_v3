@@ -7,6 +7,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 
 from graph_update_helpers import (
+    GRAPH_UPDATE_STATUS_INVALID,
+    GRAPH_UPDATE_STATUS_NO_NEW_DATA,
+    GRAPH_UPDATE_STATUS_UPDATED,
     apply_graph_update_contract,
     format_chart_data_points_for_prompt as _shared_format_chart_data_points_for_prompt,
     normalize_chart_series as _shared_normalize_chart_series,
@@ -821,19 +824,50 @@ def write_chapter(
                     f"as a Markdown table using NEW data from research. Original structure: {asset.get('description')}\n"
                 )
             else:
+                graph_update_status = str(asset.get("graph_update_status", "")).strip().lower()
+                prepared_update_visual = asset.get("prepared_update_visual")
+                update_reason = " ".join(str(asset.get("update_reason", "") or "").split())
                 extracted_prompt_data = _format_extracted_data_points_for_prompt(asset.get("extracted_data_points"))
-                preservation_note = ""
-                if extracted_prompt_data:
-                    preservation_note = (
-                        " Preserve these historical datapoints EXACTLY in the updated graph and keep their original values "
-                        f"for existing years: {extracted_prompt_data}. Append only newer years supported by the fresh research. "
+                if graph_update_status == GRAPH_UPDATE_STATUS_UPDATED and isinstance(prepared_update_visual, dict):
+                    prepared_prompt_data = _format_extracted_data_points_for_prompt(prepared_update_visual.get("data_points"))
+                    update_instructions += (
+                        f"- SOURCE GRAPH REFRESH READY: Preserve Figure '{asset.get('short_caption')}' "
+                        f"(Original ID: {asset['id']}) in the chapter flow. The refreshed graph data for this figure "
+                        "has already been prepared deterministically and is READ-ONLY. "
+                        "Do NOT invent, modify, or reinterpret datapoints for this asset, and do NOT create a competing "
+                        "replacement graph with different values in 'visual_suggestions'. "
+                        f"Use this prepared graph only as prose context: {prepared_prompt_data or extracted_prompt_data}. "
+                        "The system will inject the refreshed graph for this same figure ID automatically.\n"
                     )
-                update_instructions += (
-                    f"- RECREATE GRAPH: Recreate Figure '{asset.get('short_caption')}' (Original ID: {asset['id']}) "
-                    f"using NEW data from research through {update_end_date}. Description: {asset.get('description')}. "
-                    f"{preservation_note}"
-                    f"YOU MUST add a matching entry in 'visual_suggestions' with id '{asset['id']}' and the new data points so the system can redraw it.\n"
-                )
+                elif graph_update_status == GRAPH_UPDATE_STATUS_NO_NEW_DATA:
+                    update_instructions += (
+                        f"- KEEP ORIGINAL GRAPH: Preserve Figure '{asset.get('short_caption')}' (Original ID: {asset['id']}) "
+                        "and keep the original figure marker in context. "
+                        "No credible new numeric datapoints were found for the required update years, so do NOT add a "
+                        "refreshed graph for this asset to 'visual_suggestions'. "
+                        f"{('Reason: ' + update_reason + '. ') if update_reason else ''}\n"
+                    )
+                elif graph_update_status == GRAPH_UPDATE_STATUS_INVALID:
+                    update_instructions += (
+                        f"- REFRESH GRAPH BLOCKED: Preserve Figure '{asset.get('short_caption')}' (Original ID: {asset['id']}) "
+                        "and do NOT invent a replacement graph for this asset. "
+                        "The attempted deterministic refresh found conflicting or invalid datapoints, so keep the prose cautious "
+                        "and note uncertainty if it matters to the narrative. "
+                        f"{('Reason: ' + update_reason + '. ') if update_reason else ''}\n"
+                    )
+                else:
+                    preservation_note = ""
+                    if extracted_prompt_data:
+                        preservation_note = (
+                            " Preserve these historical datapoints EXACTLY in the updated graph and keep their original values "
+                            f"for existing years: {extracted_prompt_data}. Append only newer years supported by the fresh research. "
+                        )
+                    update_instructions += (
+                        f"- RECREATE GRAPH: Recreate Figure '{asset.get('short_caption')}' (Original ID: {asset['id']}) "
+                        f"using NEW data from research through {update_end_date}. Description: {asset.get('description')}. "
+                        f"{preservation_note}"
+                        f"YOU MUST add a matching entry in 'visual_suggestions' with id '{asset['id']}' and the new data points so the system can redraw it.\n"
+                    )
         update_instructions += (
             "For each of these items, you MUST include a [Figure ID] marker in the appropriate place in "
             "'text_content' (using the ID provided) so it appears in the final report.\n"
@@ -979,7 +1013,7 @@ OUTPUT FORMAT (MANDATORY JSON):
       "type": "graph",
       "title": "Short descriptive title",
       "description": "What this graph shows and why it is relevant",
-      "chart_type": "bar",
+      "chart_type": "line",
       "data_points": {{
         "labels": ["Label A", "Label B"],
         "values": [10, 20],
@@ -991,7 +1025,7 @@ OUTPUT FORMAT (MANDATORY JSON):
       "type": "image",
       "title": "Short descriptive title",
       "description": "What this image should show",
-      "query": "specific English DuckDuckGo search query for the image"
+      "query": "specific English web image search query for the image"
     }}
   ],
   "references": [

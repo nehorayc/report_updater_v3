@@ -440,6 +440,109 @@ def _extract_pdf_image_payload(doc: fitz.Document, image_info: tuple[Any, ...]) 
     return base_image["image"], base_image["ext"]
 
 
+def _normalize_context_excerpt(parts: list[str], *, max_chars: int = 900) -> str:
+    merged = " ".join(" ".join(str(part or "").split()) for part in parts if str(part or "").strip()).strip()
+    if len(merged) <= max_chars:
+        return merged
+    return merged[: max_chars - 1].rstrip() + "…"
+
+
+def _block_vertical_distance_from_rect(block: dict[str, Any], image_rect: fitz.Rect | None) -> float:
+    if image_rect is None:
+        return 0.0
+    y0 = float(block["bbox"][1])
+    y1 = float(block["bbox"][3])
+    if y1 < image_rect.y0:
+        return image_rect.y0 - y1
+    if y0 > image_rect.y1:
+        return y0 - image_rect.y1
+    return 0.0
+
+
+def _nearest_context_blocks_for_image(
+    page_blocks: list[dict[str, Any]],
+    *,
+    image_rect: fitz.Rect | None,
+    avg_size: float,
+    limit: int = 4,
+) -> list[dict[str, Any]]:
+    if not page_blocks:
+        return []
+
+    scored_blocks: list[tuple[float, float, int, dict[str, Any]]] = []
+    image_center_y = ((image_rect.y0 + image_rect.y1) / 2.0) if image_rect is not None else None
+    for block in page_blocks:
+        if _looks_like_heading_candidate(block, avg_size):
+            continue
+        text = str(block.get("text", "")).strip()
+        if not text:
+            continue
+
+        distance = _block_vertical_distance_from_rect(block, image_rect)
+        if image_center_y is None:
+            center_gap = 0.0
+        else:
+            block_center_y = (float(block["bbox"][1]) + float(block["bbox"][3])) / 2.0
+            center_gap = abs(block_center_y - image_center_y)
+
+        if image_rect is not None and distance > 260 and center_gap > 340:
+            continue
+
+        scored_blocks.append((distance, center_gap, block["index"], block))
+
+    if not scored_blocks:
+        for block in page_blocks:
+            if _looks_like_heading_candidate(block, avg_size):
+                continue
+            text = str(block.get("text", "")).strip()
+            if text:
+                scored_blocks.append((0.0, 0.0, block["index"], block))
+
+    scored_blocks.sort(key=lambda item: (item[0], item[1], item[2]))
+    selected = [block for _, _, _, block in scored_blocks[:limit]]
+    selected.sort(key=lambda block: block["index"])
+    return selected
+
+
+def _heading_for_image(
+    page_blocks: list[dict[str, Any]],
+    *,
+    image_rect: fitz.Rect | None,
+    avg_size: float,
+    top_level_titles: set[str],
+    size_bands: dict[str, float],
+    chapter_title: str,
+) -> str:
+    heading_candidates: list[tuple[float, int, str, dict[str, Any]]] = []
+    for block in page_blocks:
+        heading_level = _detect_heading_level(block, avg_size, top_level_titles, size_bands)
+        if heading_level == 0:
+            continue
+        text = " ".join(str(block.get("text", "") or "").split()).strip()
+        if not text:
+            continue
+
+        if image_rect is None:
+            distance = 0.0
+        else:
+            distance = abs(image_rect.y0 - float(block["bbox"][3]))
+        heading_candidates.append((distance, block["index"], text, block))
+
+    if image_rect is not None:
+        above_candidates = [
+            item for item in heading_candidates
+            if float(item[3]["bbox"][3]) <= image_rect.y0 + 40
+        ]
+        if above_candidates:
+            above_candidates.sort(key=lambda item: (item[0], -item[1]))
+            return above_candidates[0][2]
+
+    if heading_candidates:
+        heading_candidates.sort(key=lambda item: (item[0], item[1]))
+        return heading_candidates[0][2]
+    return chapter_title.strip()
+
+
 def extract_pdf_content(file_path: str, output_dir: str = ".tmp/assets") -> Dict[str, Any]:
     """
     Extracts text and images from a PDF file.
@@ -514,10 +617,22 @@ def extract_pdf_content(file_path: str, output_dir: str = ".tmp/assets") -> Dict
 
     asset_start_time = time.time()
     distinct_assets = {}
+    page_blocks_by_number: dict[int, list[dict[str, Any]]] = {}
+    for block in blocks:
+        page_blocks_by_number.setdefault(block["page_num"], []).append(block)
+
+    chapter_title_by_page: dict[int, str] = {}
+    for chapter in results["chapters"]:
+        chapter_title = str(chapter.get("title", "")).strip()
+        for page_num in chapter.get("pages", []) or []:
+            chapter_title_by_page.setdefault(page_num, chapter_title)
 
     for page_index in range(len(doc)):
         page_num = page_index + 1
-        image_list = doc[page_index].get_images(full=True)
+        page = doc[page_index]
+        image_list = page.get_images(full=True)
+        page_blocks = page_blocks_by_number.get(page_num, [])
+        chapter_title = chapter_title_by_page.get(page_num, "")
 
         for img in image_list:
             xref = img[0]
@@ -536,6 +651,32 @@ def extract_pdf_content(file_path: str, output_dir: str = ".tmp/assets") -> Dict
                         "type": "image",
                         "path": saved_path,
                     }
+                image_rects = page.get_image_rects(xref) or []
+                image_rect = image_rects[0] if image_rects else None
+                context_blocks = _nearest_context_blocks_for_image(
+                    page_blocks,
+                    image_rect=image_rect,
+                    avg_size=avg_size,
+                )
+                source_context_excerpt = _normalize_context_excerpt(
+                    [block["text"] for block in context_blocks]
+                )
+                source_context_heading = _heading_for_image(
+                    page_blocks,
+                    image_rect=image_rect,
+                    avg_size=avg_size,
+                    top_level_titles=top_level_titles,
+                    size_bands=size_bands,
+                    chapter_title=chapter_title,
+                )
+                asset_entry = distinct_assets[asset_id]
+                if source_context_excerpt and not asset_entry.get("source_context_excerpt"):
+                    asset_entry["source_context_excerpt"] = source_context_excerpt
+                    asset_entry["source_context_strategy"] = "page_excerpt"
+                if source_context_heading and not asset_entry.get("source_context_heading"):
+                    asset_entry["source_context_heading"] = source_context_heading
+                if page_num and not asset_entry.get("source_context_page"):
+                    asset_entry["source_context_page"] = page_num
 
                 for chapter in results["chapters"]:
                     if page_num in chapter.get("pages", []):

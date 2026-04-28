@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from quality_gate import clean_fixable_issues, evaluate_report_quality
+from quality_gate import (
+    build_quality_gate_cleanup_failure_result,
+    build_quality_gate_runtime_report,
+    clean_fixable_issues,
+    evaluate_report_quality,
+    final_assembly_gate_decision,
+)
 
 
 def test_quality_gate_flags_export_and_citation_defects(report_metadata):
@@ -33,6 +39,47 @@ def test_quality_gate_flags_export_and_citation_defects(report_metadata):
     }
     assert expected.issubset(codes)
     assert result["summary"]["blocking"] is True
+
+
+def test_final_assembly_gate_decision_never_blocks_even_with_errors(report_metadata):
+    chapter = {
+        "title": "Risky Chapter",
+        "draft_text": (
+            "Revenue grew 20% in 2024 without support.\n\n"
+            "[visual: deadbeef placeholder]\n\n"
+            "[Figure ID: badc0ffe_missing: Missing visual]"
+        ),
+        "references": [],
+        "approved_visuals": [],
+    }
+
+    result = evaluate_report_quality([chapter], report_metadata)
+    decision = final_assembly_gate_decision(result)
+
+    assert result["summary"]["blocking"] is True
+    assert decision["should_block"] is False
+    assert decision["notice_level"] == "warning"
+    assert "Final assembly will continue in best-effort mode" in decision["message"]
+
+
+def test_quality_gate_runtime_failures_become_non_blocking_warnings(report_metadata):
+    runtime_report = build_quality_gate_runtime_report(
+        report_metadata,
+        RuntimeError("boom"),
+        phase="evaluation",
+    )
+    cleanup_result = build_quality_gate_cleanup_failure_result(RuntimeError("cleanup boom"))
+    decision = final_assembly_gate_decision(runtime_report)
+
+    assert runtime_report["summary"]["blocking"] is False
+    assert runtime_report["summary"]["runtime_error"] is True
+    assert runtime_report["summary"]["runtime_error_phase"] == "evaluation"
+    assert runtime_report["summary"]["by_code"] == {"quality_gate_runtime_error": 1}
+    assert decision["should_block"] is False
+    assert decision["notice_level"] == "warning"
+    assert "bypassed" in decision["message"]
+    assert cleanup_result["summary"]["runtime_error"] is True
+    assert cleanup_result["summary"]["fixes_applied"] == 0
 
 
 def test_clean_fixable_issues_repairs_common_export_problems():
@@ -185,3 +232,36 @@ def test_quality_gate_flags_graph_history_drift_and_missing_update_end_year(repo
     assert "graph_preserved_history_drift" in codes
     assert "graph_update_end_year_missing" in codes
     assert result["summary"]["blocking"] is True
+
+
+def test_quality_gate_warns_when_source_graph_refresh_keeps_original_due_to_no_new_data(report_metadata):
+    chapter = {
+        "title": "Quantitative Analysis",
+        "draft_text": "[Figure feed2023aa1111111111111111111111: Enterprise AI server shipments by year]\n\nRecent commentary [1].",
+        "references": [
+            {"index": 1, "title": "Recent Update", "url": "https://example.com/update", "category": "Web"},
+        ],
+        "approved_visuals": [
+            {
+                "original_asset_id": "feed2023aa1111111111111111111111",
+                "type": "image",
+                "path": "tests/fixtures/graph_update/enterprise_ai_server_shipments_2020_2023.png",
+                "title": "Enterprise AI server shipments by year",
+            }
+        ],
+        "source_graph_refreshes": [
+            {
+                "asset_id": "feed2023aa1111111111111111111111",
+                "short_caption": "Enterprise AI server shipments by year",
+                "graph_update_status": "no_new_data",
+                "update_reason": "No credible numeric datapoints were found for all required update years 2024, 2025, 2026. The original figure was kept.",
+            }
+        ],
+    }
+
+    result = evaluate_report_quality([chapter], report_metadata)
+    issues = result["chapters"][0]["issues"]
+    codes = {issue["code"] for issue in issues}
+
+    assert "graph_update_no_new_data" in codes
+    assert result["summary"]["blocking"] is False

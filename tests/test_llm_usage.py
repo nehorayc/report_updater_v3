@@ -29,6 +29,18 @@ def test_unknown_model_cost_is_unavailable():
     assert format_cost(None) == "Unavailable"
 
 
+def test_dated_model_name_uses_base_pricing():
+    cost = estimate_cost_usd(
+        provider="openai",
+        model="gpt-5.4-mini-2026-03-17",
+        input_tokens=1_000_000,
+        output_tokens=100_000,
+    )
+
+    expected = (1_000_000 / 1_000_000 * 0.75) + (100_000 / 1_000_000 * 4.50)
+    assert cost == round(expected, 8)
+
+
 def test_usage_summary_and_export(tmp_path):
     reset_usage()
     record_usage(
@@ -68,3 +80,23 @@ def test_usage_summary_and_export(tmp_path):
     payload = json.loads((tmp_path / "report_llm_usage.json").read_text(encoding="utf-8"))
     assert payload["summary"]["calls"] == 2
     assert len(payload["calls"]) == 2
+
+
+def test_usage_summary_marks_all_unknown_costs_as_unavailable():
+    reset_usage()
+    record_usage(
+        provider="openai",
+        model="unknown-model",
+        operation="writer",
+        success=True,
+        latency_seconds=0.75,
+        input_tokens=20,
+        output_tokens=10,
+        total_tokens=30,
+    )
+
+    summary = summarize_usage()
+
+    assert summary["unknown_cost_calls"] == 1
+    assert summary["estimated_cost_usd"] is None
+    assert summary["by_group"][0]["estimated_cost_usd"] is None

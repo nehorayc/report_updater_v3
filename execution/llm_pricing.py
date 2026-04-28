@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Optional
 
 
@@ -42,10 +43,16 @@ _PRICE_PER_1M_TOKENS_USD: Dict[tuple[str, str], Dict[str, float | None]] = {
 }
 
 
+_DATED_MODEL_SUFFIX_PATTERN = re.compile(r"^(?P<base>.+)-\d{4}-\d{2}-\d{2}$")
+
+
 def _normalize_model_name(model: str) -> str:
     normalized = str(model or "").strip().lower()
     if normalized.startswith("models/"):
         normalized = normalized.split("/", 1)[1]
+    dated_match = _DATED_MODEL_SUFFIX_PATTERN.match(normalized)
+    if dated_match:
+        normalized = dated_match.group("base")
     return normalized
 
 

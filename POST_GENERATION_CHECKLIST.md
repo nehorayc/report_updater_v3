@@ -440,3 +440,193 @@ Spot-check notes:
 | Non-blocking follow-ups | Tighten source selection so clinical/oncology papers stop backing core DNA-storage claims; fail export more explicitly when citations are dropped during normalization; prevent final assembly from silently normalizing away citation mismatches; improve image-search fallback when DuckDuckGo ratelimits; clean root-level temp directories; replace deprecated `duckduckgo_search` usage with `ddgs` |
 | Ship / regenerate / patch | `Patch and regenerate` |
 | Short summary of this run | This export is mechanically better than the April 11 versions: tests are green, the DOCX is valid, placeholder leakage is gone, and failed quantitative visuals were dropped instead of shipping as raw markers. It is still not shippable because source grounding remains weak in core sections, the quality gate was overridden while chapter 4 still had blocking citation errors, and the visual layer still has trust issues. |
+
+### Run 2026-04-27 13:24 UTC
+
+#### Run Metadata
+
+| Field | Value |
+| --- | --- |
+| Date | 2026-04-27 |
+| Branch / Commit | `devcodex` / `52ee70e` |
+| Source report / input | `report-DNA-digital-data-storage (1).pdf` |
+| Chapters or scope reviewed | `Background`, `Qualitative Analysis`, `Quantitative Analysis`, `Technology Development and Adoption` |
+| Model / settings used | OpenAI `gpt-5.4-mini-2026-03-17`; 9 successful LLM calls; estimated cost `$0.0783`; export metadata shows update end date `2026-04-27` and audience `General professional audience` |
+| Reviewer | Codex |
+
+#### 1. Automated Checks
+
+| Area | Test | Method | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Tests | Full pytest suite passes | `pytest` | `Pass` | `153 passed, 3 skipped in 12.63s` |
+| Tests | Targeted regression tests for touched modules pass | `pytest tests/test_chapter_update_evaluator.py tests/test_research_agent.py tests/test_gemini_client.py tests/test_doc_builder.py tests/test_quality_gate.py tests/test_export_pipeline.py` | `Pass` | `51 passed in 10.11s` |
+| Tests | Live canary passes if this run is important enough to pay for it | `RUN_LIVE_API_TESTS=1 pytest tests/test_live_single_chapter.py -m live_api` | `N/A` | Not run for this checklist pass |
+| Tests | Export smoke test works for the generated output | Opened markdown directly, parsed DOCX with `python-docx`, verified DOCX zip integrity, and checked for raw placeholder leakage | `Pass` | Markdown and DOCX both open cleanly; DOCX contains 4 inline shapes and no raw `[visual: ...]` / `[Figure ...]` tokens |
+
+#### 2. Writing Quality
+
+| Area | Test | What good looks like | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Writing | Scope is preserved | The rewrite stays on the original chapter subject | `Pass` | The export stays focused on DNA digital data storage, and the earlier cross-domain drift is mostly gone |
+| Writing | Update window is respected | The chapter uses recent facts from the intended timeframe | `Warn` | The report is framed through 2026, but much of that framing is continuity language rather than fresh 2025-2026 evidence |
+| Writing | Tone and language match the source | It reads like the source report, not a generic AI memo | `Warn` | The prose is cautious and readable, but repeated “approved evidence/original report” phrasing still feels templated |
+| Writing | Freshness is real, not cosmetic | New claims, dates, entities, and numbers were added meaningfully | `Warn` | This run is more honest than earlier ones, but the update value is limited because large sections explicitly fall back to the original report |
+| Writing | No prompt leakage or meta-writing | No phrases like "based on the provided sources" or "this updated edition" | `Pass` | No prompt leakage or workflow terms were found in the exported markdown or DOCX |
+| Writing | No repetition or contradictions | No duplicate claims across sections or internal conflicts | `Warn` | No direct contradiction found, but the same continuity framing repeats across quantitative and adoption sections |
+| Writing | Transitions feel natural | Sections connect cleanly and do not read like stitched fragments | `Warn` | The report reads more like a structured assessment template than a smoothly revised narrative |
+| Writing | Visual suggestions are relevant | Suggested visuals match the text and are worth including | `Fail` | The manifest records 10 visuals, but only 4 exported with usable assets; the surviving qualitative graph is also low-information and not analytically persuasive |
+
+#### 3. Citation and Research Grounding
+
+| Area | Test | What to check | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Citations | Inline citations map to real references | Every cited number points to an actual reference entry | `Pass` | Inline citations and bibliography both resolve cleanly from `1-8` |
+| Citations | Reference list is deduped and renumbered correctly | No broken or repeated numbering | `Pass` | No missing, duplicated, or skipped numbering found |
+| Research | Spot-check citation accuracy | Manually verify 3-5 cited claims against the source page | `Warn` | Sampled external-review claims check out, but the readiness/adoption chapter still depends mostly on original-report-only references; see notes below |
+| Research | No invented URLs or sources | Every URL appears in gathered findings and opens correctly | `Pass` | Sampled ScienceDirect, Springer, ResearchGate, and AEA/DOI-linked references resolve |
+| Research | Sources are on-topic | No background-only or cross-domain sources are doing core support work | `Warn` | Refs `[2]`, `[3]`, and `[4]` are on-topic DNA-storage reviews, but `[7]` is general digital-economics context and chapter 4 is still anchored mostly to original-report material |
+| Research | Named entities, dates, and metrics are grounded | Important facts can be traced back to real evidence | `Warn` | Most explicit freshness claims are cautious, but the TRL/adoption dates are still inherited from the original report rather than independently refreshed |
+
+Spot-check notes:
+
+- Claim: recent reviews describe DNA storage as promising but limited by cost, workflow, and commercialization barriers `[2][3]`
+  Result: `Pass`
+  Note: The ScienceDirect review abstract covers encoding/writing/storing/retrieving/reading plus scalability limits, and the Springer review explicitly calls DNA synthesis a bottleneck.
+- Claim: high-throughput DNA synthesis is central to progress in DNA data storage `[3]`
+  Result: `Pass`
+  Note: The Springer article states that DNA synthesis is a bottleneck and frames the review around recent progress in each storage step with emphasis on synthesis limitations.
+- Claim: current competitiveness is still constrained by writing speed and cost `[4]`
+  Result: `Pass`
+  Note: The sampled ResearchGate article text describes writing speed and cost as major obstacles relative to conventional storage.
+- Claim: digital technology reduces storage, computation, transmission, search, tracking, and verification costs `[7]`
+  Result: `Pass`
+  Note: The Journal of Economic Literature abstract for `Digital Economics` says exactly that; it works as context, but it is not DNA-storage-specific evidence.
+- Claim: TRL and adoption staging remain the best available reference point `[8]`
+  Result: `Warn`
+  Note: The export clearly attributes this to the original report rather than to newly gathered external evidence, so the claim is internally consistent but only weakly refreshed.
+
+#### 4. Output and Export Quality
+
+| Area | Test | What to check | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Output | Markdown export is clean | No raw placeholders, broken headings, or malformed citations | `Pass` | No raw figure tokens, raw visual placeholders, or malformed citation groups remain |
+| Output | DOCX export opens cleanly | File opens without corruption or layout failure | `Pass` | `python-docx` parsing succeeded and DOCX zip integrity is valid |
+| Output | Visual placeholders are removed | No `[visual: ...]` or raw figure tokens remain | `Pass` | Raw placeholders are removed from both markdown and DOCX |
+| Output | Images and graphs render correctly | Captions, placement, and sizing look intentional | `Fail` | Only 4 of 10 manifest visuals have exportable assets; 6 approved image-style visuals were skipped after DuckDuckGo `403 Ratelimit` failures, and the qualitative bar chart is effectively a flat placeholder |
+| Output | Bibliography looks professional | Ordering, spacing, titles, and URLs are readable | `Pass` | Bibliography formatting is clean and readable |
+| Output | No unwanted synthetic front matter | No accidental executive summary or methodology sections unless intended | `Pass` | No unwanted synthetic front matter was inserted |
+
+#### 5. Robustness and Ops
+
+| Area | Test | What to check | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Reliability | Missing key / quota behavior is acceptable | Errors degrade clearly instead of failing silently | `Fail` | Rate-limit errors are logged clearly, but failed approved visuals are omitted from the final export instead of being replaced with an explicit reader-visible fallback |
+| Reliability | Runtime is acceptable | The generation is not meaningfully slower than expected | `Warn` | The LLM artifact shows `113.856s` of model latency, and repeated image-search retries add roughly another minute |
+| Reliability | Cost is acceptable | Retries and live calls did not create an unexpected usage spike | `Pass` | Usage artifacts were captured, all 9 paid LLM calls succeeded, and estimated model cost stayed modest at `$0.0783` |
+| Ops | Run instructions still match reality | README and launch scripts still reflect the actual flow | `Warn` | README covers the main flow, but not the current best-effort omission path for failed visuals or the advisory quality-gate behavior |
+| Ops | No stray temp artifacts remain outside `.tmp/` | Root folder is clean after the run | `Fail` | Root still contains old report/docx/pdf artifacts, `temp reports/`, and other non-`.tmp/` clutter such as `__pycache__/` |
+| Ops | No accidental debug output shipped | No leftover prints, scratch files, or dev-only text in outputs | `Pass` | No stack traces, prompt leakage, or obvious debug text appear in the exported markdown or DOCX |
+
+#### 6. Cross-Chapter Review
+
+| Area | Test | What to check | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Coherence | Chapters do not fight each other | Dates, claims, and terminology are consistent across chapters | `Pass` | No direct contradictions were found across the four exported chapters |
+| Coherence | Repetition is under control | The same stat or explanation is not repeated too often | `Warn` | Continuity phrasing about approved evidence and original-report baselines repeats across quantitative and adoption sections |
+| Coherence | Intro and conclusion still fit the body | Framing and takeaways match what the chapters actually say | `Warn` | The overall framing is aligned, but the report closes more like a long assessment appendix than a synthesized updated conclusion |
+| Coherence | Overall report feels like one document | Voice, formatting, and evidence style feel consistent | `Warn` | Voice and structure are consistent, but the missing visuals and taxonomy-heavy sections still keep it from feeling publication-ready |
+
+#### 7. Final Decision
+
+| Field | Value |
+| --- | --- |
+| Blocking issues found | Six approved image-style visuals failed due DuckDuckGo `403 Ratelimit` errors and were omitted from the export; only 4 of 10 manifest visuals rendered with usable assets; the surviving qualitative graph is low-information; the readiness/adoption chapter still relies heavily on original-report continuity instead of a strongly refreshed evidence base; root remains cluttered outside `.tmp/` |
+| Non-blocking follow-ups | Add an explicit export-visible fallback for skipped approved visuals; gate or demote low-information graphs like the flat research-themes bar chart; strengthen fresh sourcing for TRL/adoption; document current best-effort quality-gate and image-search behavior; clean root-level artifacts |
+| Ship / regenerate / patch | `Patch and regenerate` |
+| Short summary of this run | This is the mechanically cleanest DNA-storage export in the checklist so far: tests are green, citations resolve, placeholder leakage is gone, and model/cost telemetry is captured. It is still not ready to ship because most approved image visuals were dropped after search ratelimits, the remaining qualitative graph adds little value, and the update leans too heavily on original-report continuity in the readiness/adoption chapter. |
+
+### Run 2026-04-27 21:46 UTC
+
+#### Run Metadata
+
+| Field | Value |
+| --- | --- |
+| Date | 2026-04-27 |
+| Branch / Commit | `devcodex` / `52ee70e` (dirty working tree; remediation patch staged locally) |
+| Source report / input | `report-DNA-digital-data-storage (1).pdf` |
+| Chapters or scope reviewed | `exports/report-DNA-digital-data-storage (1)_20260427_213752.{docx,zip}` with focus on visual export fidelity |
+| Model / settings used | Export telemetry shows `11` successful LLM calls and estimated model cost `$0.0935`; image providers were unconfigured, so image sourcing fell back to DuckDuckGo only |
+| Reviewer | Codex |
+
+#### 1. Automated Checks
+
+| Area | Test | Method | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Tests | Full pytest suite passes | `pytest` | `Pass` | `162 passed, 3 skipped in 12.58s` |
+| Tests | Targeted regression tests for touched modules pass | `pytest tests/test_visual_pipeline_helpers.py tests/test_doc_builder.py tests/test_export_pipeline.py tests/test_image_search.py` | `Pass` | `25 passed in 1.62s` after adding explicit image fallback + contextual marker-placement coverage |
+| Tests | Live canary passes if this run is important enough to pay for it | `RUN_LIVE_API_TESTS=1 pytest tests/test_live_single_chapter.py -m live_api` | `N/A` | Not run for this checklist pass |
+| Tests | Export smoke test works for the generated output | Opened markdown directly, inspected DOCX zip contents, and checked visual manifest counts | `Warn` | The DOCX/ZIP open cleanly and contain no raw figure tokens, but only `4` of `7` manifest visuals resolved to real assets in this export |
+
+#### 2. Writing Quality
+
+| Area | Test | What good looks like | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Writing | Scope is preserved | The rewrite stays on the original chapter subject | `Pass` | The body remains focused on DNA digital data storage |
+| Writing | Update window is respected | The chapter uses recent facts from the intended timeframe | `Warn` | The report still frames itself through 2026, but much of that framing relies on continuity rather than rich new evidence |
+| Writing | Tone and language match the source | It reads like the source report, not a generic AI memo | `Warn` | Readable and cautious, but still somewhat template-shaped |
+| Writing | Freshness is real, not cosmetic | New claims, dates, entities, and numbers were added meaningfully | `Warn` | There is some real update value, but the adoption chapter still leans heavily on inherited framing |
+| Writing | No prompt leakage or meta-writing | No phrases like "based on the provided sources" or "this updated edition" | `Pass` | No prompt leakage or workflow terms were observed in the export |
+| Writing | No repetition or contradictions | No duplicate claims across sections or internal conflicts | `Warn` | No direct contradiction found, but the same continuity phrasing repeats across later chapters |
+| Writing | Transitions feel natural | Sections connect cleanly and do not read like stitched fragments | `Warn` | The missing visuals and end-loaded figures make the chapter flow feel less intentional |
+| Writing | Visual suggestions are relevant | Suggested visuals match the text and are worth including | `Fail` | Three approved image visuals never rendered, and the surviving graphs largely appear at chapter tails instead of near the relevant discussion |
+
+#### 3. Citation and Research Grounding
+
+| Area | Test | What to check | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Citations | Inline citations map to real references | Every cited number points to an actual reference entry | `Pass` | No broken citation numbering was found in the inspected export |
+| Citations | Reference list is deduped and renumbered correctly | No broken or repeated numbering | `Pass` | Bibliography numbering appears stable and deduped |
+| Research | Spot-check citation accuracy | Manually verify 3-5 cited claims against the source page | `Warn` | Not re-run deeply in this focused pass; previous concerns about the readiness/adoption evidence mix still apply |
+| Research | No invented URLs or sources | Every URL appears in gathered findings and opens correctly | `Pass` | Sampled references remain structurally valid in the export |
+| Research | Sources are on-topic | No background-only or cross-domain sources are doing core support work | `Warn` | The report is more on-topic than earlier runs, but the adoption chapter still depends heavily on original-report continuity |
+| Research | Named entities, dates, and metrics are grounded | Important facts can be traced back to real evidence | `Warn` | No obvious new grounding regression surfaced, but this pass was focused on export mechanics rather than full claim verification |
+
+#### 4. Output and Export Quality
+
+| Area | Test | What to check | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Output | Markdown export is clean | No raw placeholders, broken headings, or malformed citations | `Pass` | No raw `[visual: ...]` or `[Figure ...]` tokens remain in the markdown export |
+| Output | DOCX export opens cleanly | File opens without corruption or layout failure | `Pass` | The DOCX zip is valid and contains `4` embedded media files |
+| Output | Visual placeholders are removed | No `[visual: ...]` or raw figure tokens remain | `Pass` | Raw placeholder tokens were removed successfully |
+| Output | Images and graphs render correctly | Captions, placement, and sizing look intentional | `Fail` | `3` approved images are missing entirely, and the surviving graphs cluster near chapter ends because marker-placement fell back to end-appends in this run |
+| Output | Bibliography looks professional | Ordering, spacing, titles, and URLs are readable | `Pass` | Bibliography formatting is clean |
+| Output | No unwanted synthetic front matter | No accidental executive summary or methodology sections unless intended | `Pass` | No unwanted synthetic front matter was inserted |
+
+#### 5. Robustness and Ops
+
+| Area | Test | What to check | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Reliability | Missing key / quota behavior is acceptable | Errors degrade clearly instead of failing silently | `Fail` | With no image-provider API keys configured, DuckDuckGo ratelimits caused approved visuals to disappear from the export instead of degrading to a reader-visible fallback in this run |
+| Reliability | Runtime is acceptable | The generation is not meaningfully slower than expected | `Warn` | Repeated image-search retries still add avoidable latency |
+| Reliability | Cost is acceptable | Retries and live calls did not create an unexpected usage spike | `Pass` | Model telemetry stayed modest at roughly `$0.0935` for the run |
+| Ops | Run instructions still match reality | README and launch scripts still reflect the actual flow | `Warn` | The current best-effort export behavior around missing visuals is still under-documented |
+| Ops | No stray temp artifacts remain outside `.tmp/` | Root folder is clean after the run | `Fail` | Root still contains many historical export artifacts and temp-style directories outside `.tmp/` |
+| Ops | No accidental debug output shipped | No leftover prints, scratch files, or dev-only text in outputs | `Pass` | No stack traces or debug text leaked into the export body |
+
+#### 6. Cross-Chapter Review
+
+| Area | Test | What to check | Result | Notes |
+| --- | --- | --- | --- | --- |
+| Coherence | Chapters do not fight each other | Dates, claims, and terminology are consistent across chapters | `Pass` | No direct contradictions surfaced during this export review |
+| Coherence | Repetition is under control | The same stat or explanation is not repeated too often | `Warn` | The readiness/adoption sections still repeat continuity framing |
+| Coherence | Intro and conclusion still fit the body | Framing and takeaways match what the chapters actually say | `Warn` | The text is broadly aligned, but the missing visuals weaken the narrative support in the final chapters |
+| Coherence | Overall report feels like one document | Voice, formatting, and evidence style feel consistent | `Warn` | The report is structurally coherent, but the missing images and back-loaded graphs make the visual rhythm feel unfinished |
+
+#### 7. Final Decision
+
+| Field | Value |
+| --- | --- |
+| Blocking issues found | Three approved image visuals (`DNA Storage Lifecycle Overview`, `DNA Storage Use-Case Map`, and `DNA data storage workflow schematic`) have no resolved asset paths in the final manifest; only `4` of `7` manifest visuals exported with assets; the surviving graphs are largely pushed to chapter tails because marker placement fell back to end-appends |
+| Non-blocking follow-ups | Regenerate after the current patch so image failures degrade to explicit placeholders and marker placement uses contextual paragraph matching; continue tightening fresh sourcing for readiness/adoption claims; clean root-level artifact clutter |
+| Ship / regenerate / patch | `Patch and regenerate` |
+| Short summary of this run | This export is valid and token-clean, but it still matches the two practical regressions spotted in review: approved images were omitted when live search ratelimited, and the surviving graphs ended up visually back-loaded near chapter ends. A deterministic export-path patch is now staged locally to address both issues before the next regeneration. |

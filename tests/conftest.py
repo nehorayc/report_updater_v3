@@ -25,7 +25,7 @@ def no_live_gemini(monkeypatch, request):
         return
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
 
 
 @pytest.fixture

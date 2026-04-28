@@ -61,7 +61,26 @@ from graph_question_discovery import (
     discover_graphable_questions,
     evaluate_graphable_question_candidates,
 )
+from graph_update_helpers import (
+    GRAPH_UPDATE_STATUS_INVALID,
+    GRAPH_UPDATE_STATUS_NO_NEW_DATA,
+    GRAPH_UPDATE_STATUS_UPDATED,
+    asset_has_update_plan,
+    asset_requires_chart_refresh,
+    graph_update_required_years,
+    inject_prepared_source_graph_updates,
+    merge_graph_update_references,
+    normalize_chart_series,
+    preferred_extracted_data_points,
+    prepare_source_graph_refresh,
+    unresolved_source_chart_updates,
+)
 from graph_ranking import build_ranked_graph_candidate_groups
+from visual_pipeline_helpers import (
+    build_figure_marker,
+    place_marker_near_relevant_paragraph,
+    resolve_visual_for_export,
+)
 from llm_client import (
     get_api_key,
     get_provider,
@@ -71,6 +90,12 @@ from llm_client import (
 )
 from llm_pricing import format_cost
 from llm_usage import export_usage_reports, get_usage_rows, reset_usage, summarize_usage
+from report_change_summary import (
+    build_report_change_payload,
+    compute_report_change_signature,
+    generate_ai_report_change_summary,
+    selected_change_summary_model,
+)
 
 # State Machine Constants
 STATE_UPLOAD_EXTRACT = "UPLOAD_AND_EXTRACT"
@@ -163,6 +188,15 @@ if "llm_provider" not in st.session_state:
 
 if "llm_usage_artifacts" not in st.session_state:
     st.session_state.llm_usage_artifacts = {}
+
+if "change_summary_result" not in st.session_state:
+    st.session_state.change_summary_result = None
+
+if "change_summary_signature" not in st.session_state:
+    st.session_state.change_summary_signature = None
+
+if "change_summary_error" not in st.session_state:
+    st.session_state.change_summary_error = None
 
 os.environ["LLM_PROVIDER"] = st.session_state.llm_provider
 
@@ -309,37 +343,6 @@ def _queue_runtime_diagnostics(diagnostics, source: str, context_label: str = ""
         _queue_ui_notice(diagnostic.get("level", "info"), message, source=source)
 
 
-def _quality_gate_block_message(result: dict) -> str:
-    summary = result.get("summary", {})
-    errors = summary.get("error_count", 0)
-    warnings = summary.get("warning_count", 0)
-
-    issue_snippets = []
-    for chapter in result.get("chapters", []):
-        for issue in chapter.get("issues", []):
-            issue_snippets.append(f"{chapter.get('chapter_title', 'Untitled')}: {issue.get('message', '')}")
-            if len(issue_snippets) >= 2:
-                break
-        if len(issue_snippets) >= 2:
-            break
-
-    suffix = f" Top issue: {' | '.join(issue_snippets)}" if issue_snippets else ""
-    return (
-        f"Final assembly is blocked by the quality gate ({errors} error(s), {warnings} warning(s)). "
-        f"Review step 6 and fix or clean the blocking issues before exporting.{suffix}"
-    )
-
-
-def _has_non_overridable_gate_issues(result: dict) -> bool:
-    for chapter in result.get("chapters", []):
-        for issue in chapter.get("issues", []):
-            if issue.get("severity") != "error":
-                continue
-            if issue.get("code") in NON_OVERRIDABLE_QUALITY_GATE_CODES:
-                return True
-    return False
-
-
 def _format_update_window(metadata):
     return f"{metadata['update_start_date'].isoformat()} to {metadata['update_end_date'].isoformat()}"
 
@@ -367,8 +370,33 @@ def _selected_updateable_assets():
     return [
         asset
         for asset in _selected_source_assets()
-        if str(asset.get("type", "")).lower() in {"chart", "table"}
+        if str(asset.get("type", "")).lower() in {"chart", "graph", "table"}
     ]
+
+
+def _selected_retained_source_assets_for_chapter(chapter):
+    return [
+        asset
+        for asset in _selected_assets_for_chapter(chapter)
+        if not asset_has_update_plan(asset)
+        or str(asset.get("graph_update_status", "")).strip().lower() == GRAPH_UPDATE_STATUS_NO_NEW_DATA
+    ]
+
+
+def _format_unresolved_chart_update_message(failures):
+    snippets = []
+    for failure in failures[:3]:
+        chapter_title = failure.get("chapter_title", "Untitled Chapter")
+        asset_id = str(failure.get("asset_id", ""))[:8] or "unknown"
+        short_caption = failure.get("short_caption", "Source chart")
+        snippets.append(f"{chapter_title}: Figure {asset_id} ({short_caption})")
+    suffix = f" Affected charts: {' | '.join(snippets)}." if snippets else ""
+    return (
+        "Final assembly is blocked because one or more source charts were marked "
+        "'Refresh with updated data' but no approved replacement graph is ready for export. "
+        "Review the graph selections in step 6 or change the source-visual plan in step 3."
+        + suffix
+    )
 
 
 def _default_asset_update_query(asset, report_metadata):
@@ -378,6 +406,161 @@ def _default_asset_update_query(asset, report_metadata):
     if str(asset.get("type", "")).lower() == "table":
         return f"{asset.get('short_caption') or 'table'} data {fallback_year}"
     return f"{asset.get('short_caption') or 'chart'} statistics {fallback_year}"
+
+
+_ASSET_MARKER_PATTERN = re.compile(r"\[Asset:\s*([A-Za-z0-9_-]{4,64})\s*\]", re.IGNORECASE)
+_GRAPH_CONTEXT_TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9%/-]{2,}")
+_GRAPH_CONTEXT_STOPWORDS = {
+    "about", "after", "also", "annual", "area", "areas", "asset", "based", "below", "between",
+    "both", "chart", "count", "data", "field", "figure", "from", "graph", "into", "main",
+    "original", "recent", "report", "series", "share", "shows", "showing", "source", "technology",
+    "that", "their", "there", "these", "this", "through", "time", "total", "updated", "using",
+    "value", "values", "with", "year", "years",
+}
+
+
+def _clean_source_context_text(text, max_chars=500):
+    cleaned = str(text or "")
+    cleaned = _ASSET_MARKER_PATTERN.sub(" ", cleaned)
+    cleaned = VISUAL_MARKER_PATTERN.sub(" ", cleaned)
+    cleaned = RAW_VISUAL_TOKEN_PATTERN.sub(" ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return cleaned[: max_chars - 1].rstrip() + "…"
+
+
+def _extract_asset_context_from_chapter_text(text, asset, *, max_chars=500):
+    source_text = str(text or "").strip()
+    if not source_text:
+        return ""
+
+    short_id = str(asset.get("id") or "")[:8]
+    marker_candidates = [
+        f"[Asset: {short_id}]",
+        f"Figure {short_id}",
+        f"Asset: {short_id}",
+    ]
+    paragraphs = [block.strip() for block in re.split(r"\n\s*\n", source_text) if block.strip()]
+    target_index = None
+    for index, paragraph in enumerate(paragraphs):
+        if any(candidate in paragraph for candidate in marker_candidates):
+            target_index = index
+            break
+
+    if target_index is None:
+        for index, paragraph in enumerate(paragraphs):
+            if short_id and short_id in paragraph:
+                target_index = index
+                break
+
+    if target_index is None:
+        for index, paragraph in enumerate(paragraphs):
+            cleaned = _clean_source_context_text(paragraph, max_chars=max_chars)
+            if len(cleaned.split()) >= 6:
+                target_index = index
+                break
+
+    if target_index is None:
+        return ""
+
+    window_start = max(0, target_index - 1)
+    window_end = min(len(paragraphs), target_index + 2)
+    excerpt_parts = []
+    for index in range(window_start, window_end):
+        cleaned = _clean_source_context_text(paragraphs[index], max_chars=max_chars)
+        if cleaned and cleaned not in excerpt_parts:
+            excerpt_parts.append(cleaned)
+    return _clean_source_context_text(" ".join(excerpt_parts), max_chars=max_chars)
+
+
+def _asset_context_fallback_for_chapter(chapter, asset):
+    original_text = chapter.get("original_full_text") or chapter.get("content") or ""
+    marker_excerpt = _extract_asset_context_from_chapter_text(original_text, asset, max_chars=500)
+    if marker_excerpt:
+        return marker_excerpt
+    return _clean_source_context_text(original_text, max_chars=500)
+
+
+def _asset_context_heading_for_chapter(chapter):
+    blueprint = chapter.get("blueprint") or {}
+    return (
+        str(blueprint.get("source_chapter_title") or "").strip()
+        or str(chapter.get("source_title") or "").strip()
+        or str(chapter.get("title") or "").strip()
+    )
+
+
+def _attach_source_context_to_asset_for_chapter(asset, chapter):
+    if not isinstance(asset, dict):
+        return asset
+    asset["source_context_fallback"] = _asset_context_fallback_for_chapter(chapter, asset)
+    asset["source_context_chapter_title"] = _asset_context_heading_for_chapter(chapter)
+    if not asset.get("source_context_heading"):
+        asset["source_context_heading"] = asset["source_context_chapter_title"]
+    return asset
+
+
+def _graph_context_query_seed(asset, *, limit=8):
+    seed_parts = []
+    heading = " ".join(str(asset.get("source_context_heading") or "").split()).strip()
+    if heading:
+        seed_parts.append(heading)
+
+    seen_tokens = set()
+    excerpt_pool = " ".join(
+        str(asset.get(key) or "").strip()
+        for key in ("source_context_excerpt", "source_context_fallback")
+    )
+    for token in _GRAPH_CONTEXT_TOKEN_PATTERN.findall(excerpt_pool):
+        normalized = token.lower()
+        if normalized in _GRAPH_CONTEXT_STOPWORDS or normalized in seen_tokens:
+            continue
+        seen_tokens.add(normalized)
+        seed_parts.append(token)
+        if len(seen_tokens) >= limit:
+            break
+
+    return " ".join(seed_parts[: limit + 1]).strip()
+
+
+def _clear_graph_refresh_state(asset):
+    if not isinstance(asset, dict):
+        return
+    for key in (
+        "graph_update_status",
+        "prepared_update_visual",
+        "update_reason",
+        "required_years",
+        "graph_update_validation_errors",
+        "graph_update_research_findings",
+        "graph_update_references",
+    ):
+        asset.pop(key, None)
+
+
+def _graph_refresh_research_topic(asset, update_end_date):
+    base_query = " ".join(
+        str(asset.get("update_query") or asset.get("short_caption") or asset.get("description") or "chart").split()
+    ).strip()
+    extracted_data_points = preferred_extracted_data_points(asset)
+    required_years = graph_update_required_years(extracted_data_points, update_end_date)
+    normalized = normalize_chart_series(extracted_data_points)
+    unit = normalized[2] if normalized else ""
+    context_seed = _graph_context_query_seed(asset)
+
+    suffix_parts = []
+    if context_seed and context_seed.lower() not in base_query.lower():
+        suffix_parts.append(context_seed)
+    if required_years:
+        suffix_parts.append(" ".join(str(year) for year in required_years))
+    if unit:
+        suffix_parts.append(unit)
+
+    suffix = " ".join(part for part in suffix_parts if part).strip()
+    if suffix and suffix.lower() not in base_query.lower():
+        return f"{base_query} {suffix}".strip()
+    return base_query
 
 
 def _current_visual_plan_mode(asset):
@@ -460,6 +643,7 @@ def _apply_visual_resolution_metadata(visual, result):
     for key in (
         "url",
         "source_url",
+        "source",
         "provider",
         "query",
         "selection_reason",
@@ -469,6 +653,11 @@ def _apply_visual_resolution_metadata(visual, result):
         "height",
         "aspect_ratio",
         "filename",
+        "thumbnail",
+        "photographer_name",
+        "photographer_url",
+        "license_label",
+        "attribution_text",
     ):
         value = result.get(key)
         if value not in (None, ""):
@@ -480,7 +669,7 @@ def _rewrite_visual_markers(text: str, marker_ids: set[str], canonical_marker_id
         return text, 0
 
     replacements = 0
-    canonical_marker = f"[Figure {canonical_marker_id}: {caption}]"
+    canonical_marker = build_figure_marker(canonical_marker_id, caption)
 
     def replace(match):
         nonlocal replacements
@@ -496,6 +685,23 @@ def _rewrite_visual_markers(text: str, marker_ids: set[str], canonical_marker_id
 def _visual_short_id(visual):
     marker_id = _canonical_visual_marker_id(visual)
     return marker_id[:8].lower()
+
+
+def _ensure_source_asset_marker(text: str, asset: dict) -> str:
+    asset_id = _normalize_marker_token(asset.get("id"))
+    if not asset_id:
+        return text
+
+    for marker in VISUAL_MARKER_PATTERN.findall(text or ""):
+        normalized_marker = _normalize_marker_token(marker)
+        if normalized_marker == asset_id or normalized_marker[:8] == asset_id[:8]:
+            return text
+
+    caption = asset.get("short_caption") or asset.get("title") or "Source Figure"
+    marker = build_figure_marker(asset.get("id"), caption)
+    if not str(text or "").strip():
+        return marker
+    return f"{str(text).rstrip()}\n\n{marker}\n"
 
 
 def _strip_unapproved_visual_markers(text: str, approved_visual_ids):
@@ -666,6 +872,9 @@ def render_upload_extract():
             logger.info(f"User clicked 'Extract Chapters & Visuals' for file: {uploaded_file.name}")
             with st.spinner("Extracting text and media..."):
                 report_metadata = _get_report_metadata()
+                st.session_state.change_summary_result = None
+                st.session_state.change_summary_signature = None
+                st.session_state.change_summary_error = None
                 if uploaded_file.name.endswith(".pdf"):
                     results = extract_pdf_content(temp_path)
                 else:
@@ -1140,6 +1349,9 @@ def render_source_visual_planning():
                                     st.code(table_markdown, language="markdown")
                             else:
                                 st.warning("No table transcription is available for this source table yet.")
+                            _clear_graph_refresh_state(asset)
+                        else:
+                            _clear_graph_refresh_state(asset)
                     else:
                         chart_options = ["Keep original", "Refresh with updated data"]
                         selection = st.radio(
@@ -1158,6 +1370,8 @@ def render_source_visual_planning():
                                 key=f"source_visual_query_{asset['id']}",
                             )
                             st.caption("The drafting step will research fresh data and recreate this chart.")
+                        else:
+                            _clear_graph_refresh_state(asset)
 
     nav_col1, nav_col2 = st.columns(2)
     if nav_col1.button("Back to Source Visual Selection"):
@@ -1362,14 +1576,14 @@ from research_agent import (
     reset_runtime_diagnostics as reset_research_runtime_diagnostics,
 )
 from writer_agent import write_chapter
-from quality_gate import clean_fixable_issues, evaluate_report_quality, has_blocking_issues
-
-NON_OVERRIDABLE_QUALITY_GATE_CODES = {
-    "broken_figure_marker",
-    "raw_visual_token",
-    "citation_reference_mismatch",
-    "graph_missing_data_points",
-}
+from quality_gate import (
+    build_quality_gate_cleanup_failure_result,
+    build_quality_gate_runtime_report,
+    clean_fixable_issues,
+    evaluate_report_quality,
+    final_assembly_gate_decision,
+    has_blocking_issues,
+)
 
 def render_draft_generation():
     st.header("5. Draft Generation")
@@ -1407,45 +1621,91 @@ def render_draft_generation():
             
             # 2. Graph Update Research
             assets_to_update = []
+            source_graph_refreshes = []
             if 'asset_ids' in chapter:
-                # Find assets marked for update
                 assets_in_chapter = _selected_assets_for_chapter(chapter)
+                chapter_update_end_date = chapter['blueprint'].get('update_end_date')
                 for asset in assets_in_chapter:
                     if asset.get('do_update') or asset.get('convert_to_text'):
+                        _attach_source_context_to_asset_for_chapter(asset, chapter)
                         assets_to_update.append(asset)
-                        
-                        if asset.get('do_update'):
-                            # Perform specific research for this graph/table
-                            query = asset.get('update_query')
-                            if query:
-                                status_text.text(f"Researching updated data for Figure {asset['id'][:8]}...")
-                                reset_research_runtime_diagnostics()
-                                graph_findings = perform_comprehensive_research({
-                                    "topic": query,
-                                    "keywords": [], # Query is specific enough
-                                    "report_metadata": chapter['blueprint'].get('report_metadata', {}),
-                                    "original_report_date": chapter['blueprint'].get('original_report_date'),
-                                    "update_start_date": chapter['blueprint'].get('update_start_date'),
-                                    "update_end_date": chapter['blueprint'].get('update_end_date'),
-                                })
-                                graph_diagnostics = consume_research_runtime_diagnostics()
-                                if graph_diagnostics:
-                                    _queue_runtime_diagnostics(
-                                        graph_diagnostics,
-                                        source="research",
-                                        context_label=f"Visual research for figure {asset['id'][:8]}",
-                                    )
-                                    latest = graph_diagnostics[-1]
-                                    latest_message = f"Figure {asset['id'][:8]}: {latest.get('message', '')}"
-                                    if latest.get("level") == "error":
-                                        generation_alert.error(latest_message)
-                                    else:
-                                        generation_alert.warning(latest_message)
-                                # Tag these findings so the writer knows they are for the graph
-                                for gf in graph_findings:
-                                    gf['title'] = f"[For Figure {asset['id'][:8]}] " + gf['title']
-                                
-                                findings.extend(graph_findings)
+                        if not asset.get('do_update'):
+                            _clear_graph_refresh_state(asset)
+                            continue
+
+                        if not asset_requires_chart_refresh(asset):
+                            _clear_graph_refresh_state(asset)
+                            continue
+
+                        status_text.text(f"Researching updated data for Figure {asset['id'][:8]}...")
+                        reset_research_runtime_diagnostics()
+                        graph_query = _graph_refresh_research_topic(asset, chapter_update_end_date)
+                        graph_findings = perform_comprehensive_research({
+                            "topic": graph_query,
+                            "keywords": [],
+                            "report_metadata": chapter['blueprint'].get('report_metadata', {}),
+                            "original_report_date": chapter['blueprint'].get('original_report_date'),
+                            "update_start_date": chapter['blueprint'].get('update_start_date'),
+                            "update_end_date": chapter['blueprint'].get('update_end_date'),
+                        })
+                        graph_diagnostics = consume_research_runtime_diagnostics()
+                        if graph_diagnostics:
+                            _queue_runtime_diagnostics(
+                                graph_diagnostics,
+                                source="research",
+                                context_label=f"Visual research for figure {asset['id'][:8]}",
+                            )
+                            latest = graph_diagnostics[-1]
+                            latest_message = f"Figure {asset['id'][:8]}: {latest.get('message', '')}"
+                            if latest.get("level") == "error":
+                                generation_alert.error(latest_message)
+                            else:
+                                generation_alert.warning(latest_message)
+
+                        for gf in graph_findings:
+                            gf['title'] = f"[For Figure {asset['id'][:8]}] " + gf['title']
+
+                        findings.extend(graph_findings)
+                        preferred_extracted_data = preferred_extracted_data_points(asset)
+                        if preferred_extracted_data:
+                            asset["extracted_data_points"] = preferred_extracted_data
+                        asset["graph_update_research_findings"] = graph_findings
+                        refresh_result = prepare_source_graph_refresh(
+                            asset,
+                            graph_findings,
+                            update_end_year=chapter_update_end_date,
+                        )
+                        asset["graph_update_status"] = refresh_result.get("graph_update_status", "")
+                        asset["prepared_update_visual"] = refresh_result.get("prepared_update_visual")
+                        asset["update_reason"] = refresh_result.get("update_reason", "")
+                        asset["required_years"] = refresh_result.get("required_years", [])
+                        asset["graph_update_validation_errors"] = refresh_result.get("graph_update_validation_errors", [])
+                        asset["graph_update_references"] = refresh_result.get("graph_update_references", [])
+
+                        refresh_status = str(refresh_result.get("graph_update_status", "")).strip().lower()
+                        refresh_summary = {
+                            "asset_id": str(asset.get("id") or ""),
+                            "short_caption": asset.get("short_caption") or asset.get("title") or "Source chart",
+                            "graph_update_status": refresh_status,
+                            "update_reason": refresh_result.get("update_reason", ""),
+                            "required_years": refresh_result.get("required_years", []),
+                        }
+                        source_graph_refreshes.append(refresh_summary)
+
+                        if refresh_status == GRAPH_UPDATE_STATUS_NO_NEW_DATA:
+                            warning_message = (
+                                f"Figure {asset['id'][:8]} kept the original source graph because no credible "
+                                f"new datapoints were found. {refresh_result.get('update_reason', '')}"
+                            ).strip()
+                            _queue_ui_notice("warning", warning_message, source="generation")
+                            generation_alert.warning(warning_message)
+                        elif refresh_status == GRAPH_UPDATE_STATUS_INVALID:
+                            error_message = (
+                                f"Figure {asset['id'][:8]} could not be refreshed safely. "
+                                f"{refresh_result.get('update_reason', '')}"
+                            ).strip()
+                            _queue_ui_notice("error", error_message, source="generation")
+                            generation_alert.error(error_message)
 
             # 3. Write Chapter
             graph_question_candidates = evaluate_graphable_question_candidates(findings, chapter['blueprint'])
@@ -1472,9 +1732,13 @@ def render_draft_generation():
                 generation_alert.error(error_message)
                 st.error(f"Error in Chapter {idx+1}: {result['error']}")
                 chapter['draft_text'] = "Error generating content."
+                chapter['source_graph_refreshes'] = source_graph_refreshes
             else:
                 draft_text = result['text_content']
-                visual_suggestions = result.get('visual_suggestions', [])
+                visual_suggestions = inject_prepared_source_graph_updates(
+                    result.get('visual_suggestions', []),
+                    assets_to_update,
+                )
                 generated_title = str(result.get('chapter_title', '')).strip()
                 if generated_title:
                     chapter.setdefault('source_title', chapter.get('title', ''))
@@ -1505,13 +1769,13 @@ def render_draft_generation():
                     marker_caption = v.get('title') or v.get('description', 'Figure')
                     marker_candidates = _visual_marker_keys(v)
                     v['marker_id'] = canonical_marker_id
+                    canonical_marker = build_figure_marker(canonical_marker_id, marker_caption)
 
                     # 2. Normalize any legacy marker to the canonical export marker.
                     ai_marker = v.get('marker_in_text')
                     if ai_marker and ai_marker in draft_text:
-                        new_marker = f"[Figure {canonical_marker_id}: {marker_caption}]"
-                        draft_text = draft_text.replace(ai_marker, new_marker)
-                        logger.info(f"Replaced marker '{ai_marker}' with '{new_marker}'")
+                        draft_text = draft_text.replace(ai_marker, canonical_marker)
+                        logger.info(f"Replaced marker '{ai_marker}' with '{canonical_marker}'")
                     else:
                         draft_text, rewritten_markers = _rewrite_visual_markers(
                             draft_text,
@@ -1526,12 +1790,41 @@ def render_draft_generation():
                                 v.get('title'),
                                 canonical_marker_id,
                             )
-                        elif ai_marker:
-                            logger.warning(f"Marker '{ai_marker}' not found in draft text for visual '{v.get('title')}'. Visual will appear at chapter end.")
                         else:
-                            injected_marker = f"\n\n[Figure {canonical_marker_id}: {marker_caption}]\n"
-                            draft_text += injected_marker
-                            logger.info(f"Injected new visual marker for '{v.get('title')}' (id={canonical_marker_id}) at chapter end.")
+                            draft_text, placement_mode = place_marker_near_relevant_paragraph(
+                                draft_text,
+                                canonical_marker,
+                                v,
+                            )
+                            if placement_mode == "contextual":
+                                logger.info(
+                                    "Placed visual marker for '%s' (id=%s) near matching chapter text.",
+                                    v.get('title'),
+                                    canonical_marker_id,
+                                )
+                            elif placement_mode == "empty":
+                                logger.info(
+                                    "Inserted visual marker for '%s' (id=%s) into an empty chapter body.",
+                                    v.get('title'),
+                                    canonical_marker_id,
+                                )
+                            else:
+                                if ai_marker:
+                                    logger.warning(
+                                        "Marker '%s' was not found for visual '%s'; appended the canonical marker at chapter end.",
+                                        ai_marker,
+                                        v.get('title'),
+                                    )
+                                else:
+                                    logger.warning(
+                                        "Could not find a strong paragraph anchor for visual '%s' (id=%s); appended it at chapter end.",
+                                        v.get('title'),
+                                        canonical_marker_id,
+                                    )
+
+                for asset in assets_to_update:
+                    if str(asset.get("graph_update_status", "")).strip().lower() == GRAPH_UPDATE_STATUS_NO_NEW_DATA:
+                        draft_text = _ensure_source_asset_marker(draft_text, asset)
 
                 chapter['draft_text'] = draft_text
                 chapter['executive_takeaway'] = result.get('executive_takeaway', '')
@@ -1542,6 +1835,7 @@ def render_draft_generation():
                 chapter['suggested_visuals'] = visual_suggestions
                 chapter['graph_question_candidates'] = graph_question_candidates
                 chapter['graphable_questions'] = graphable_questions
+                chapter['source_graph_refreshes'] = source_graph_refreshes
                 chapter['graph_candidate_groups'] = build_ranked_graph_candidate_groups(
                     [visual for visual in visual_suggestions if str(visual.get("type", "")).strip().lower() == "graph"],
                     chapter_title=chapter.get("title", ""),
@@ -1549,7 +1843,10 @@ def render_draft_generation():
                     chapter_role=(chapter.get("blueprint") or {}).get("chapter_role", ""),
                     graphable_questions=graphable_questions,
                 )
-                chapter['references'] = result.get('references', [])
+                chapter['references'] = merge_graph_update_references(
+                    result.get('references', []),
+                    assets_to_update,
+                )
             
         progress_bar.progress((idx + 1) / total)
 
@@ -1576,8 +1873,14 @@ def render_quality_gate_results(result):
 
     st.divider()
     st.subheader("Pre-Export Quality Gate")
-    if summary.get("blocking"):
-        st.error(f"Blocking issues found: {error_count} errors and {warning_count} warnings for update window {update_window}.")
+    if summary.get("runtime_error"):
+        phase = summary.get("runtime_error_phase", "evaluation")
+        st.warning(
+            f"Quality gate {phase} failed internally and was bypassed for update window {update_window}. "
+            "Final assembly can continue in best-effort mode."
+        )
+    elif summary.get("blocking"):
+        st.error(f"Quality gate found {error_count} errors and {warning_count} warnings for update window {update_window}.")
     elif warning_count:
         st.warning(f"No blocking issues found, but there are {warning_count} warnings for update window {update_window}.")
     else:
@@ -1590,7 +1893,12 @@ def render_quality_gate_results(result):
     metric_cols[3].metric("Issue Types", len(by_code))
 
     cleanup_summary = (st.session_state.get("last_cleanup_result") or {}).get("summary", {})
-    if cleanup_summary:
+    if cleanup_summary.get("runtime_error"):
+        st.warning(
+            "Clean Fixable Issues failed internally and was skipped: "
+            f"{cleanup_summary.get('runtime_error_type', 'Error')}: {cleanup_summary.get('runtime_error_message', '')}"
+        )
+    elif cleanup_summary:
         st.info(
             "Last cleanup pass touched "
             f"{cleanup_summary.get('changed_chapters', 0)} chapter(s) and applied "
@@ -1624,17 +1932,32 @@ def render_quality_gate_results(result):
 
     if summary.get("blocking"):
         st.warning(
-            "Blocking quality-gate issues are still present. Final assembly will continue in best-effort mode and surface the affected visuals, graphs, or citations as warnings."
+            "Quality-gate issues are still present. Final assembly will continue in best-effort mode and surface the affected visuals, graphs, or citations as warnings."
         )
 
 
 def run_quality_gate():
-    quality_report = evaluate_report_quality(
-        st.session_state.chapters,
-        _serialize_report_metadata(_get_report_metadata()),
-    )
+    metadata = _serialize_report_metadata(_get_report_metadata())
+    try:
+        quality_report = evaluate_report_quality(
+            st.session_state.chapters,
+            metadata,
+        )
+    except Exception as exc:
+        logger.warning("Quality gate evaluation failed; continuing without blocking: %s", exc, exc_info=True)
+        quality_report = build_quality_gate_runtime_report(metadata, exc, phase="evaluation")
     st.session_state.quality_gate_result = quality_report
     return quality_report
+
+
+def run_quality_cleanup():
+    try:
+        cleanup_result = clean_fixable_issues(st.session_state.chapters)
+    except Exception as exc:
+        logger.warning("Quality gate cleanup failed; continuing without blocking: %s", exc, exc_info=True)
+        cleanup_result = build_quality_gate_cleanup_failure_result(exc)
+    st.session_state.last_cleanup_result = cleanup_result
+    return cleanup_result
 
 def render_draft_verification():
     st.header("6. Draft Review & Visual Approval")
@@ -1654,6 +1977,7 @@ def render_draft_verification():
             "graph_candidate_groups",
             "references",
             "approved_visuals",
+            "source_graph_refreshes",
         ):
             chapter.pop(key, None)
     
@@ -1781,12 +2105,14 @@ def render_draft_verification():
                             with st.container(border=True):
                                 v_type = visual.get('type', 'visual').lower()
                                 if v_type == 'image':
-                                    st.caption("Web image from DuckDuckGo search")
+                                    st.caption("Web image suggestion from the configured search providers")
+                                    st.write(f"**{visual.get('type', 'Visual').upper()}**: {visual.get('title', visual.get('description'))}")
+                                    st.caption(visual.get('description'))
+                                    st.checkbox("Approve Update", value=True, key=f"app_upd_{idx}_{v_idx}")
                                 else:
                                     st.caption(v_type.capitalize())
-
-                                st.write(f"**{visual.get('type', 'Visual').upper()}**: {visual.get('title', visual.get('description'))}")
-                                st.checkbox("Approve Update", value=True, key=f"app_upd_{idx}_{v_idx}")
+                                    st.write(f"**{visual.get('type', 'Visual').upper()}**: {visual.get('title', visual.get('description'))}")
+                                    st.checkbox("Approve Update", value=True, key=f"app_upd_{idx}_{v_idx}")
 
                     if new_visuals:
                         st.markdown("#### New Suggestions")
@@ -1795,23 +2121,22 @@ def render_draft_verification():
                                 v_type = visual.get('type', 'visual').lower()
                                 if v_type == 'image':
                                     query = visual.get('query', visual.get('description', ''))
-                                    st.caption(f"Web image from DuckDuckGo search: {query[:50]}")
+                                    st.caption(f"Web image suggestion: {query[:50]}")
+                                    st.write(f"**{visual.get('type', 'Visual').upper()}**: {visual.get('title', visual.get('description'))}")
+                                    st.caption(visual.get('description'))
+                                    st.checkbox("Approve New Visual", key=f"app_new_{idx}_{n_idx}")
                                 else:
                                     st.caption(v_type.capitalize())
-
-                                st.write(f"**{visual.get('type', 'Visual').upper()}**: {visual.get('title', visual.get('description'))}")
-                                st.caption(visual.get('description'))
-                                st.checkbox("Approve New Visual", key=f"app_new_{idx}_{n_idx}")
+                                    st.write(f"**{visual.get('type', 'Visual').upper()}**: {visual.get('title', visual.get('description'))}")
+                                    st.caption(visual.get('description'))
+                                    st.checkbox("Approve New Visual", key=f"app_new_{idx}_{n_idx}")
 
                 if not graph_candidate_groups and not non_graph_visuals:
                     st.info("No updated or newly suggested visuals for this chapter.")
 
                 # Show original retained assets independent of above approvals.
                 if 'asset_ids' in chapter:
-                    # Filter for selected assets only
-                    selected_original = [a for a in st.session_state.assets 
-                                         if a['id'] in chapter['asset_ids'] 
-                                         and a['id'] in st.session_state.selected_asset_ids]
+                    selected_original = _selected_retained_source_assets_for_chapter(chapter)
                     
                     if selected_original:
                          st.markdown("#### Retained Original Assets")
@@ -1833,7 +2158,7 @@ def render_draft_verification():
         st.rerun()
     if action_col2.button("Clean Fixable Issues"):
         _clear_ui_notices(source="quality_gate")
-        st.session_state.last_cleanup_result = clean_fixable_issues(st.session_state.chapters)
+        run_quality_cleanup()
         run_quality_gate()
         st.rerun()
 
@@ -1841,6 +2166,8 @@ def render_draft_verification():
 
     if st.button("Finalize and Assemble Report", type="primary"):
         _clear_ui_notices(source="quality_gate")
+        st.session_state.final_assembly_error = None
+        planned_chart_update_failures = []
         # Build approved_visuals from checkbox state for each chapter
         for idx, chapter in enumerate(st.session_state.chapters):
             chapter['approved_visuals'] = []
@@ -1882,9 +2209,7 @@ def render_draft_verification():
 
             # Add retained original assets
             if 'asset_ids' in chapter:
-                selected_original = [a for a in st.session_state.assets 
-                                     if a['id'] in chapter['asset_ids'] 
-                                     and a['id'] in st.session_state.selected_asset_ids]
+                selected_original = _selected_retained_source_assets_for_chapter(chapter)
                 
                 for r_idx, r_asset in enumerate(selected_original):
                     if st.session_state.get(f"retained_{idx}_{r_idx}", True):
@@ -1902,22 +2227,45 @@ def render_draft_verification():
                                 "short_caption": r_asset.get('short_caption', '')
                             })
 
+            planned_chart_update_failures.extend(
+                {
+                    **failure,
+                    "chapter_title": chapter.get("title", "Untitled Chapter"),
+                }
+                for failure in unresolved_source_chart_updates(
+                    _selected_assets_for_chapter(chapter),
+                    chapter['approved_visuals'],
+                )
+            )
+
             chapter['draft_text'] = _strip_export_visual_tokens(
                 chapter.get('draft_text', ''),
                 _approved_visual_short_ids(chapter),
             )
 
-        st.session_state.last_cleanup_result = clean_fixable_issues(st.session_state.chapters)
+        if planned_chart_update_failures:
+            message = _format_unresolved_chart_update_message(planned_chart_update_failures)
+            logger.warning(message)
+            st.session_state.final_assembly_error = message
+            _queue_ui_notice("error", message, source="final_assembly")
+            return
+
+        cleanup_result = run_quality_cleanup()
         quality_report = run_quality_gate()
         st.session_state.quality_gate_result = quality_report
-        if has_blocking_issues(quality_report):
-            logger.warning("Continuing to final assembly in best-effort mode despite quality gate issues.")
-            block_message = _quality_gate_block_message(quality_report)
-            if _has_non_overridable_gate_issues(quality_report):
-                block_message += " Best-effort export may omit unresolved visuals or drop invalid citations, but assembly will continue."
+        if cleanup_result.get("summary", {}).get("runtime_error"):
             _queue_ui_notice(
                 "warning",
-                block_message,
+                "Clean Fixable Issues failed internally and was skipped. Final assembly will continue in best-effort mode.",
+                source="quality_gate",
+            )
+        gate_decision = final_assembly_gate_decision(quality_report)
+        if has_blocking_issues(quality_report):
+            logger.warning("Continuing to final assembly in best-effort mode despite quality gate issues.")
+        if gate_decision.get("message"):
+            _queue_ui_notice(
+                gate_decision.get("notice_level") or "warning",
+                gate_decision["message"],
                 source="quality_gate",
             )
 
@@ -1987,6 +2335,149 @@ def _render_llm_usage_report() -> None:
         st.dataframe(detail_rows, use_container_width=True, hide_index=True)
 
 
+def _current_change_summary_signature() -> str:
+    provider = st.session_state.get("llm_provider", get_provider())
+    model = selected_change_summary_model(provider)
+    return compute_report_change_signature(
+        st.session_state.get("chapters", []),
+        provider=provider,
+        model=model,
+    )
+
+
+def _invalidate_change_summary_cache_if_needed() -> bool:
+    current_signature = _current_change_summary_signature()
+    stored_signature = st.session_state.get("change_summary_signature")
+    had_cached_state = bool(
+        st.session_state.get("change_summary_result") or st.session_state.get("change_summary_error")
+    )
+    is_stale = bool(had_cached_state and stored_signature and stored_signature != current_signature)
+
+    if is_stale:
+        st.session_state.change_summary_result = None
+        st.session_state.change_summary_error = None
+
+    st.session_state.change_summary_signature = current_signature
+    return is_stale
+
+
+def _render_change_list(caption: str, values: list[str]) -> None:
+    if not values:
+        return
+    st.caption(caption)
+    for value in values:
+        st.markdown(f"- {value}")
+
+
+def _render_change_summary_section() -> None:
+    st.subheader("What Changed")
+    st.caption("Generate an optional report-wide summary on demand, or review the chapter-by-chapter change log below.")
+
+    payload = build_report_change_payload(st.session_state.get("chapters", []))
+    counts = payload.get("counts", {})
+    summary_became_stale = _invalidate_change_summary_cache_if_needed()
+    current_signature = st.session_state.get("change_summary_signature")
+
+    metric_cols = st.columns(5)
+    metric_cols[0].metric("Changed Chapters", counts.get("changed_chapters", 0))
+    metric_cols[1].metric("Updated Claims", counts.get("total_updated_claims", 0))
+    metric_cols[2].metric("New Claims", counts.get("total_new_claims", 0))
+    metric_cols[3].metric("Retained Claims", counts.get("total_retained_claims", 0))
+    metric_cols[4].metric("Open Questions", counts.get("total_open_questions", 0))
+
+    if summary_became_stale:
+        st.info("The report changed since the last AI summary. Regenerate it to refresh the report-wide overview.")
+
+    button_label = "Refresh AI Change Summary" if st.session_state.get("change_summary_result") else "Generate AI Change Summary"
+    if st.button(button_label, key="generate_change_summary"):
+        summary_result = generate_ai_report_change_summary(payload)
+        st.session_state.change_summary_signature = current_signature
+        st.session_state.change_summary_result = None
+        st.session_state.change_summary_error = None
+
+        if summary_result.get("error"):
+            st.session_state.change_summary_error = summary_result["error"]
+        else:
+            st.session_state.change_summary_result = summary_result
+
+        if st.session_state.get("llm_usage_export_base"):
+            _save_llm_usage_artifacts(st.session_state["llm_usage_export_base"])
+        st.rerun()
+
+    if st.session_state.get("change_summary_error"):
+        st.warning(st.session_state["change_summary_error"])
+
+    summary_result = st.session_state.get("change_summary_result") or {}
+    if summary_result:
+        with st.container(border=True):
+            st.write(f"**{summary_result.get('headline', 'AI Change Summary')}**")
+            for bullet in summary_result.get("summary_bullets", []):
+                st.markdown(f"- {bullet}")
+
+            important_changes = summary_result.get("important_changes", [])
+            if important_changes:
+                st.caption("Important Changes")
+                for item in important_changes:
+                    chapter_title = str(item.get("chapter_title", "")).strip()
+                    change_text = str(item.get("change", "")).strip()
+                    if not change_text:
+                        continue
+                    prefix = f"**{chapter_title}:** " if chapter_title else ""
+                    st.markdown(f"- {prefix}{change_text}")
+
+            notable_open_questions = summary_result.get("notable_open_questions", [])
+            if notable_open_questions:
+                st.caption("Notable Open Questions")
+                for item in notable_open_questions:
+                    chapter_title = str(item.get("chapter_title", "")).strip()
+                    question_text = str(item.get("question", "")).strip()
+                    if not question_text:
+                        continue
+                    prefix = f"**{chapter_title}:** " if chapter_title else ""
+                    st.markdown(f"- {prefix}{question_text}")
+
+    chapters = payload.get("chapters", [])
+    if not chapters:
+        st.info("No chapter data is available for change tracking yet.")
+        return
+
+    for chapter in chapters:
+        title = chapter.get("title", "Untitled Chapter")
+        change_count = (
+            len(chapter.get("updated_claims", []))
+            + len(chapter.get("new_claims", []))
+            + len(chapter.get("retained_claims", []))
+            + len(chapter.get("open_questions", []))
+        )
+        changed_flag = "Updated" if chapter.get("changed") else "No structured changes"
+        expander_label = f"{title} ({changed_flag}, {change_count} tracked items)"
+        with st.expander(expander_label):
+            word_cols = st.columns(2)
+            word_cols[0].metric("Original Words", chapter.get("original_word_count", 0))
+            word_cols[1].metric("Final Words", chapter.get("final_word_count", 0))
+
+            takeaway = str(chapter.get("executive_takeaway", "")).strip()
+            if takeaway:
+                st.caption("Executive Takeaway")
+                st.write(takeaway)
+
+            _render_change_list("Updated Claims", chapter.get("updated_claims", []))
+            _render_change_list("New Claims", chapter.get("new_claims", []))
+            _render_change_list("Retained Claims", chapter.get("retained_claims", []))
+            _render_change_list("Open Questions", chapter.get("open_questions", []))
+
+            if not any(
+                [
+                    takeaway,
+                    chapter.get("updated_claims"),
+                    chapter.get("new_claims"),
+                    chapter.get("retained_claims"),
+                    chapter.get("open_questions"),
+                ]
+            ):
+                st.caption("No structured chapter changes were captured for this section.")
+
+
 def render_final_assembly():
     st.header("7. Final Assembly")
     st.write("Producing visuals and constructing final document...")
@@ -2011,15 +2502,23 @@ def render_final_assembly():
                             continue
 
                         status.update(label=f"Generating {visual['type']} for {chapter['title']}...")
-                        if visual['type'] == 'graph':
-                            res = generate_graph(visual)
-                        else:
-                            query = visual.get('query') or visual.get('description') or visual.get('title')
-                            res = search_and_download_image(query)
+                        res = resolve_visual_for_export(
+                            visual,
+                            generate_graph_fn=generate_graph,
+                            search_image_fn=search_and_download_image,
+                        )
 
                         if 'path' in res:
                             _apply_visual_resolution_metadata(visual, res)
                             visual.pop("generation_error", None)
+                            if str(res.get("provider", "")).strip().lower() == "placeholder":
+                                fallback_message = (
+                                    f"{chapter.get('title', 'Untitled Chapter')}: "
+                                    f"{visual.get('title', visual.get('short_caption', visual.get('type', 'visual')))} "
+                                    "used an explicit placeholder because live image search did not return a usable asset."
+                                )
+                                final_assembly_warnings.append(f"Visual fallback used: {fallback_message}")
+                                logger.warning(fallback_message)
                             continue
 
                         failure_message = (
@@ -2102,6 +2601,9 @@ def render_final_assembly():
 
     st.divider()
     _render_llm_usage_report()
+
+    st.divider()
+    _render_change_summary_section()
 
     st.divider()
     

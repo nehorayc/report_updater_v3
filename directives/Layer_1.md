@@ -27,6 +27,7 @@ The application logic follows a linear state machine in `app.py`, with a feedbac
 *   **User Action:** Checkbox selection `[x] Include`.
 *   **System Action (On Transition):**
     *   **Vision Analysis:** Transcribe selected Graph/Table data via the selected multimodal LLM provider.
+        *   Provider JSON may differ by backend: OpenAI JSON mode can wrap per-image results in an object such as `{"analysis": [...]}` even when the prompt asks for a top-level list. The execution tool must normalize this into exactly one result per selected asset and use placeholder/fallback analysis for any selected asset the provider omits.
     *   **Text Analysis:** Analyze chapters to determine initial Topic, Timeframe, and Keywords.
 
 ### **State 3: SOURCE VISUAL UPDATE PLANNING**
@@ -106,6 +107,7 @@ The application logic follows a linear state machine in `app.py`, with a feedbac
 ### **C. LLM Provider Reliability**
 *   **Tooling:** Route app-level LLM calls through `execution/llm_client.py` so provider selection, token/cost telemetry, and response normalization remain centralized.
 *   **Provider selection:** `LLM_PROVIDER=gemini|openai` controls the backend. Gemini is the default and uses `GEMINI_API_KEY`; OpenAI uses `OPENAI_API_KEY` and defaults to `OPENAI_MODEL=gpt-5.4-mini`.
+*   **OpenAI parameter compatibility:** Do not send sampling parameters such as `temperature` directly from call sites. Route them through `execution/llm_client.py`; the router omits unsupported parameters for GPT-5/reasoning-style OpenAI models and retries once without a parameter if OpenAI rejects it as unsupported.
 *   **Gemini tooling:** Gemini provider calls continue to route through `execution/gemini_client.py` so retry, rate limiting, and fallback behavior remains centralized.
 *   **Flash 3 high-demand fallback:** If a Gemini Flash 3 model returns `503 UNAVAILABLE` with a high-demand message, retry the same request once on `gemini-2.5-flash`.
 *   **Flash 2.5 high-demand fallback:** If `gemini-2.5-flash` returns the same high-demand `503`, retry once on `gemini-2.0-flash`; this protects graph/asset vision stages that already use Flash 2.5 directly.

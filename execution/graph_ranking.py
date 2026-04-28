@@ -58,7 +58,8 @@ _STOPWORDS = {
     "year",
     "years",
 }
-_SHORTLIST_SIZE = 3
+_SHORTLIST_SIZE = 4
+_SUPPORTED_CHART_TYPES = {"bar", "line", "pie", "horizontal_bar", "stacked_bar", "area"}
 _AUTO_SELECT_THRESHOLD = 0.84
 _REVIEW_THRESHOLD = 0.68
 _SCORE_WEIGHTS = {
@@ -153,13 +154,15 @@ def _question_chart_preference(question: Dict[str, Any], labels: List[str]) -> s
         if str(family).strip()
     ]
     for family in families:
-        if family in {"bar", "line", "pie"}:
+        if family in _SUPPORTED_CHART_TYPES:
             return family
     question_type = str(question.get("question_type") or "").strip().lower()
     if question_type == "trend":
         return "line"
     if question_type == "composition":
-        return "pie" if 2 <= len(labels) <= 5 else "bar"
+        return "pie" if 2 <= len(labels) <= 5 else "stacked_bar"
+    if question_type == "comparison" and _labels_need_horizontal_layout(labels):
+        return "horizontal_bar"
     return "bar"
 
 
@@ -256,6 +259,18 @@ def _positive_ratio(values: Iterable[float]) -> float:
     return round(positives[-1] / smallest, 4)
 
 
+def _labels_need_horizontal_layout(labels: List[str]) -> bool:
+    return len(labels) > 6 or any(len(str(label)) > 18 for label in labels)
+
+
+def _supports_area(labels: List[str], multi_series: bool) -> bool:
+    return bool(labels) and not multi_series and _looks_like_year_series(labels)
+
+
+def _supports_stacked_bar(multi_series: bool) -> bool:
+    return multi_series
+
+
 def _normalize_chart_type(
     visual: Dict[str, Any],
     labels: List[str],
@@ -265,7 +280,7 @@ def _normalize_chart_type(
     preferred_chart_families: Optional[List[str]] = None,
 ) -> str:
     chart_type = str(visual.get("chart_type") or "").strip().lower()
-    if chart_type in {"bar", "line", "pie"}:
+    if chart_type in _SUPPORTED_CHART_TYPES:
         return chart_type
     families = [
         str(family).strip().lower()
@@ -273,14 +288,20 @@ def _normalize_chart_type(
         if str(family).strip()
     ]
     for family in families:
-        if family in {"bar", "line", "pie"}:
+        if family in _SUPPORTED_CHART_TYPES:
             return family
     if question_type == "trend":
         return "line"
     if question_type == "composition":
+        if multi_series:
+            return "stacked_bar"
         return "pie" if 2 <= len(labels) <= 5 else "bar"
     if _looks_like_year_series(labels):
         return "line"
+    if _labels_need_horizontal_layout(labels):
+        return "horizontal_bar"
+    if multi_series:
+        return "stacked_bar"
     if not multi_series and 2 <= len(labels) <= 5:
         return "bar"
     return "bar"
@@ -305,7 +326,7 @@ def _variant_specs(
     normalized = normalize_chart_series((visual or {}).get("data_points"))
     if not normalized:
         chart_type = str(visual.get("chart_type") or "bar").strip().lower() or "bar"
-        return [(chart_type if chart_type in {"bar", "line", "pie"} else "bar", "linear")]
+        return [(chart_type if chart_type in _SUPPORTED_CHART_TYPES else "bar", "linear")]
 
     labels, values_by_series, _, multi_series = normalized
     flattened_values = _flatten_values(values_by_series)
@@ -326,17 +347,23 @@ def _variant_specs(
     if not preferred_chart_type:
         preferred_chart_type = "line" if _looks_like_year_series(labels) else "bar"
     use_log_variant = (
-        base_chart_type in {"bar", "line"} or preferred_chart_type in {"bar", "line"}
+        base_chart_type in {"bar", "line", "horizontal_bar"} or preferred_chart_type in {"bar", "line", "horizontal_bar"}
     ) and all(value > 0 for value in flattened_values) and _positive_ratio(flattened_values) >= 100
 
     specs: List[tuple[str, str]] = [(base_chart_type, "linear")]
     if preferred_chart_type != base_chart_type:
         specs.append((preferred_chart_type, "linear"))
-    if _supports_pie(labels, flattened_values, multi_series):
+    if question_type == "trend" and _supports_area(labels, multi_series):
+        specs.append(("area", "linear"))
+    if question_type in {"comparison", "before_after"} and _labels_need_horizontal_layout(labels):
+        specs.append(("horizontal_bar", "linear"))
+    if question_type == "composition" and _supports_stacked_bar(multi_series):
+        specs.append(("stacked_bar", "linear"))
+    if _supports_pie(labels, flattened_values, multi_series) and question_type in {"composition", ""}:
         specs.append(("pie", "linear"))
     if use_log_variant:
         specs.append((preferred_chart_type, "log"))
-        if base_chart_type in {"bar", "line"} and base_chart_type != preferred_chart_type:
+        if base_chart_type in {"bar", "line", "horizontal_bar"} and base_chart_type != preferred_chart_type:
             specs.append((base_chart_type, "log"))
 
     deduped: List[tuple[str, str]] = []
@@ -353,6 +380,9 @@ def _variant_label(chart_type: str, y_axis_scale: str) -> str:
     chart_label = {
         "bar": "Bar chart",
         "line": "Line chart",
+        "horizontal_bar": "Horizontal bar chart",
+        "stacked_bar": "Stacked bar chart",
+        "area": "Area chart",
         "pie": "Pie chart",
     }.get(chart_type, chart_type.title())
     if y_axis_scale == "log":
@@ -418,6 +448,21 @@ def _score_text_relevance(candidate: Dict[str, Any], brief: Dict[str, Any], char
         or any(token in lowered_context for token in ("compare", "comparison", "versus", " vs ", "relative", "density"))
     ):
         score += 0.12
+    if chart_type == "horizontal_bar" and (
+        question_type in {"comparison", "before_after"}
+        or any(token in lowered_context for token in ("compare", "comparison", "versus", " vs ", "relative", "density"))
+    ):
+        score += 0.14
+    if chart_type == "stacked_bar" and (
+        question_type == "composition"
+        or any(token in lowered_context for token in ("share", "mix", "composition", "portion", "breakdown", "distribution"))
+    ):
+        score += 0.14
+    if chart_type == "area" and (
+        question_type == "trend"
+        or any(token in lowered_context for token in ("trend", "trajectory", "over time", "annual", "growth"))
+    ):
+        score += 0.1
     if chart_type == "pie" and (
         question_type == "composition"
         or any(token in lowered_context for token in ("share", "mix", "composition", "portion"))
@@ -443,23 +488,35 @@ def _score_analytical_help(
     score = 0.5
     if question_type == "trend" and chart_type == "line":
         score += 0.3
+    elif question_type == "trend" and chart_type == "area":
+        score += 0.24
     elif question_type == "comparison" and chart_type == "bar":
         score += 0.24
+    elif question_type == "comparison" and chart_type == "horizontal_bar":
+        score += 0.26
     elif question_type == "composition" and chart_type == "pie":
         score += 0.18
+    elif question_type == "composition" and chart_type == "stacked_bar":
+        score += 0.24
     elif _looks_like_year_series(labels) and chart_type == "line":
         score += 0.28
+    elif _looks_like_year_series(labels) and chart_type == "area":
+        score += 0.22
     elif not _looks_like_year_series(labels) and chart_type == "bar":
         score += 0.2
+    elif not _looks_like_year_series(labels) and chart_type == "horizontal_bar":
+        score += 0.22
     elif chart_type == "pie":
         score += 0.05
 
     if multi_series and chart_type in {"bar", "line"}:
         score += 0.08
+    if multi_series and chart_type == "stacked_bar":
+        score += 0.12
 
     if ratio >= 100 and y_axis_scale == "log":
         score += 0.22
-    elif ratio >= 100 and chart_type in {"bar", "line"}:
+    elif ratio >= 100 and chart_type in {"bar", "line", "horizontal_bar"}:
         score -= 0.2
 
     if len(labels) <= 1:
@@ -485,14 +542,25 @@ def _score_readability(
             score -= 0.5
         if any(value < 0 for value in flattened_values):
             score -= 0.6
+    if chart_type == "horizontal_bar" and _labels_need_horizontal_layout(labels):
+        score += 0.12
+    if chart_type == "bar" and _labels_need_horizontal_layout(labels):
+        score -= 0.12
     if chart_type == "bar" and len(labels) > 8:
         score -= 0.1
+    if chart_type == "stacked_bar" and len(labels) > 10:
+        score -= 0.08
     if chart_type == "line" and len(labels) > 12:
         score -= 0.08
+    if chart_type == "area" and len(labels) > 12:
+        score -= 0.1
     if long_label_count:
-        score -= min(0.18, long_label_count * 0.03)
+        if chart_type == "horizontal_bar":
+            score += min(0.12, long_label_count * 0.02)
+        else:
+            score -= min(0.18, long_label_count * 0.03)
 
-    if ratio >= 100 and chart_type in {"bar", "line"} and y_axis_scale != "log":
+    if ratio >= 100 and chart_type in {"bar", "line", "horizontal_bar"} and y_axis_scale != "log":
         score -= 0.42
     if ratio >= 100 and y_axis_scale == "log":
         score += 0.18
@@ -539,10 +607,12 @@ def _score_production_robustness(
     score = 0.92
     if not labels or not flattened_values:
         score -= 0.85
-    if chart_type not in {"bar", "line", "pie"}:
+    if chart_type not in _SUPPORTED_CHART_TYPES:
         score -= 0.5
     if chart_type == "pie" and (multi_series or any(value < 0 for value in flattened_values)):
         score -= 0.5
+    if chart_type == "area" and multi_series:
+        score -= 0.45
     return _clamp_score(score)
 
 
@@ -576,9 +646,15 @@ def _decision_reasons(
         reasons.append(f"Matches vetted question: {brief['target_question_text']}")
     if _looks_like_year_series(labels) and chart_type == "line":
         reasons.append("Matches a time-series trend.")
+    if _looks_like_year_series(labels) and chart_type == "area":
+        reasons.append("Uses an area view to emphasize cumulative trend shape.")
+    if chart_type == "horizontal_bar":
+        reasons.append("Horizontal layout keeps long category labels readable.")
+    if chart_type == "stacked_bar":
+        reasons.append("Stacked view highlights category composition across series.")
     if ratio >= 100 and y_axis_scale == "log":
         reasons.append("Uses log scale so smaller values stay visible.")
-    elif ratio >= 100 and chart_type in {"bar", "line"}:
+    elif ratio >= 100 and chart_type in {"bar", "line", "horizontal_bar"}:
         reasons.append("Linear scale compresses smaller values.")
     if candidate.get("original_asset_id"):
         reasons.append("Preserves the original figure slot and update metadata.")
@@ -623,6 +699,8 @@ def _score_candidate(candidate: Dict[str, Any], brief: Dict[str, Any], *, base_c
         blocked_reasons.append("Pie charts cannot represent multiple series cleanly.")
     if chart_type == "pie" and any(value < 0 for value in flattened_values):
         blocked_reasons.append("Pie charts cannot be rendered with negative values.")
+    if chart_type == "area" and multi_series:
+        blocked_reasons.append("Area charts are only enabled for single-series trend views.")
     if y_axis_scale == "log" and any(value <= 0 for value in flattened_values):
         blocked_reasons.append("Log scale requires all plotted values to be positive.")
 
@@ -768,10 +846,14 @@ def build_ranked_graph_candidate_group(
 
     recommended = shortlist[0] if shortlist else ranked_candidates[0]
     top_score = (recommended.get("scorecard") or {}).get("overall_score", 0.0)
+    force_auto_source_refresh = bool(visual.get("prepared_source_graph_refresh")) and not recommended.get("blocked")
 
     if recommended.get("blocked"):
         selection_mode = "skip"
         auto_select_candidate_id = ""
+    elif force_auto_source_refresh:
+        selection_mode = "auto"
+        auto_select_candidate_id = recommended["id"]
     elif top_score >= _AUTO_SELECT_THRESHOLD:
         selection_mode = "auto"
         auto_select_candidate_id = recommended["id"]

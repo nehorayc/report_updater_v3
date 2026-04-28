@@ -14,6 +14,7 @@ from llm_usage import record_usage
 _DEFAULT_PROVIDER = "gemini"
 _DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
 _DEFAULT_OPENAI_REASONING_EFFORT = "low"
+_OPENAI_REASONING_MODEL_PREFIXES = ("gpt-5", "o1", "o3", "o4")
 
 _OPENAI_ROLE_ENV = {
     "writer": "OPENAI_WRITER_MODEL",
@@ -162,6 +163,39 @@ def _contents_to_openai_input(contents: Any) -> Any:
     return [{"role": "user", "content": parts}]
 
 
+def _normalized_openai_model_name(model: str) -> str:
+    return str(model or "").strip().lower().split("/")[-1]
+
+
+def _openai_model_supports_reasoning(model: str) -> bool:
+    normalized = _normalized_openai_model_name(model)
+    return normalized.startswith(_OPENAI_REASONING_MODEL_PREFIXES)
+
+
+def _openai_model_supports_temperature(model: str) -> bool:
+    return not _openai_model_supports_reasoning(model)
+
+
+def _is_unsupported_openai_parameter_error(exc: Exception, parameter: str) -> bool:
+    message = str(exc or "").lower()
+    return "unsupported parameter" in message and f"'{parameter.lower()}'" in message
+
+
+def _create_openai_response_with_parameter_fallbacks(client: Any, request_kwargs: Dict[str, Any]) -> Any:
+    while True:
+        try:
+            return client.responses.create(**request_kwargs)
+        except Exception as exc:
+            removable_parameter = None
+            for parameter in ("temperature", "reasoning"):
+                if parameter in request_kwargs and _is_unsupported_openai_parameter_error(exc, parameter):
+                    removable_parameter = parameter
+                    break
+            if not removable_parameter:
+                raise
+            request_kwargs.pop(removable_parameter, None)
+
+
 def _generate_openai_content(
     *,
     api_key: str,
@@ -179,19 +213,20 @@ def _generate_openai_content(
     request_kwargs: Dict[str, Any] = {
         "model": model,
         "input": _contents_to_openai_input(contents),
-        "reasoning": {
+    }
+    if _openai_model_supports_reasoning(model):
+        request_kwargs["reasoning"] = {
             "effort": str(
                 os.getenv("OPENAI_REASONING_EFFORT", _DEFAULT_OPENAI_REASONING_EFFORT)
                 or _DEFAULT_OPENAI_REASONING_EFFORT
             ).strip()
-        },
-    }
-    if temperature is not None:
+        }
+    if temperature is not None and _openai_model_supports_temperature(model):
         request_kwargs["temperature"] = temperature
     if response_mime_type == "application/json":
         request_kwargs["text"] = {"format": {"type": "json_object"}}
 
-    response = client.responses.create(**request_kwargs)
+    response = _create_openai_response_with_parameter_fallbacks(client, request_kwargs)
     actual_model = str(_attr_or_key(response, "model", model) or model)
     return LLMResponse(
         text=_coerce_openai_text(response),

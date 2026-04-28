@@ -35,6 +35,19 @@ def _normalize_text_key(value: Any) -> str:
     return " ".join(str(value or "").split()).strip().lower()
 
 
+def _provider_display_name(value: Any) -> str:
+    normalized = _normalize_text_key(value)
+    if normalized == "pixabay":
+        return "Pixabay"
+    if normalized == "pexels":
+        return "Pexels"
+    if normalized == "serpapi":
+        return "SerpApi"
+    if normalized == "ddgs":
+        return "DuckDuckGo"
+    return str(value or "").strip()
+
+
 def _reference_identity(ref: Dict) -> tuple:
     """Builds a stable identity for deduplicating references across chapters."""
     title = str(ref.get('title', '')).strip().lower()
@@ -300,7 +313,27 @@ def _visual_export_id(visual: Dict[str, Any], fallback: str) -> str:
     return _normalize_marker_token(fallback) or 'visual'
 
 
-def _visual_caption_text(visual: Dict[str, Any]) -> str:
+def _visual_caption_text(visual: Dict[str, Any] | None, fallback_id: str = "") -> str:
+    if not visual:
+        return f"Figure {fallback_id}".strip()
+
+    base_title = _visual_base_title(visual)
+    attribution = str(visual.get("attribution_text") or "").strip()
+    photographer_name = str(visual.get("photographer_name") or "").strip()
+    provider = _provider_display_name(visual.get("provider"))
+    source = str(visual.get("source") or "").strip()
+
+    if not attribution and photographer_name and provider:
+        attribution = f"Photo by {photographer_name} on {provider}"
+    elif not attribution and source and source.lower() != provider.lower():
+        attribution = f"Source: {source}"
+
+    if attribution:
+        return f"Figure: {base_title} - {attribution}"
+    return f"Figure: {base_title}"
+
+
+def _visual_base_title(visual: Dict[str, Any]) -> str:
     return (
         " ".join(str(visual.get("title", "") or "").split())
         or " ".join(str(visual.get("short_caption", "") or "").split())
@@ -366,7 +399,7 @@ def _build_visual_manifest(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any
                     "chapter_title": chapter.get("title", f"Chapter {chapter_index}"),
                     "marker_id": _normalize_marker_token(visual.get("marker_id")),
                     "export_id": _visual_export_id(visual, chapter.get("title", "visual")),
-                    "caption": _visual_caption_text(visual),
+                    "caption": _visual_base_title(visual),
                     "type": str(visual.get("type", "")).strip().lower() or "visual",
                     "source_type": _visual_source_type(visual),
                     "path": path,
@@ -377,7 +410,7 @@ def _build_visual_manifest(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any
                     "reuse_reason": " ".join(str(visual.get("reuse_reason", "") or "").split()),
                     "is_reused_visual": bool(visual.get("is_reused_visual")),
                     "text_reference_count": referenced_visual_ids.get(id(visual), 0),
-                    "source_url": str(visual.get("url", "") or ""),
+                    "source_url": str(visual.get("source_url") or visual.get("url") or ""),
                 }
             )
 
@@ -775,7 +808,7 @@ class ReportBuilder:
                         asset_id_short = _normalize_marker_token(marker_token)[:8]
                         v = _resolve_visual(visual_lookup, marker_token)
                         img_path = v.get('path') if v else None
-                        cap_text = f"Figure: {v.get('title', v.get('short_caption', 'Visual'))}" if v else f"Figure {asset_id_short}"
+                        cap_text = _visual_caption_text(v, asset_id_short)
 
                         if v is not None and not (img_path and os.path.exists(img_path)):
                             import glob
@@ -1071,7 +1104,7 @@ def build_markdown_report(
                         asset_id_short = _normalize_marker_token(marker_token)[:8]
                         v = _resolve_visual(visual_lookup, marker_token)
                         img_path = v.get('path') if v else None
-                        cap_text = f"Figure: {v.get('title', v.get('short_caption', 'Visual'))}" if v else f"Figure {asset_id_short}"
+                        cap_text = _visual_caption_text(v, asset_id_short)
 
                         if v is not None and not (img_path and os.path.exists(img_path)):
                             import glob
