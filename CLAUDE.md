@@ -74,13 +74,13 @@ Default provider behavior is controlled centrally through `execution/llm_client.
 - `OPENAI_API_KEY` for OpenAI
 - `OPENAI_MODEL` for the default OpenAI model
 - Optional role-specific overrides:
-	- `OPENAI_WRITER_MODEL`
-	- `OPENAI_ANALYZER_MODEL`
-	- `OPENAI_VISION_MODEL`
-	- `OPENAI_RESEARCH_RANKER_MODEL`
-	- `OPENAI_TRANSLATOR_MODEL`
-	- `OPENAI_GRAPH_MODEL`
-	- `OPENAI_CHAPTER_JUDGE_MODEL`
+  - `OPENAI_WRITER_MODEL`
+  - `OPENAI_ANALYZER_MODEL`
+  - `OPENAI_VISION_MODEL`
+  - `OPENAI_RESEARCH_RANKER_MODEL`
+  - `OPENAI_TRANSLATOR_MODEL`
+  - `OPENAI_GRAPH_MODEL`
+  - `OPENAI_CHAPTER_JUDGE_MODEL`
 
 Do not bypass `execution/llm_client.py` for app-level provider calls unless there is a very good reason. That module centralizes provider selection, compatibility handling, and usage telemetry.
 
@@ -168,4 +168,3 @@ When you notice temp or generated files outside `.tmp/` or `exports/`, treat tha
 ## Summary
 
 You sit between human intent, repo directives, and deterministic execution modules. Read the closest directive, locate the controlling runtime path, prefer existing tools, validate narrowly, and keep output artifacts and workflow contracts consistent.
-

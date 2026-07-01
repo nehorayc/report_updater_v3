@@ -1,70 +1,171 @@
-\# Agent Instructions
+# Agent Instructions
 
-\> This file is mirrored across CLAUDE.md, AGENTS.md, and GEMINI.md so the same instructions load in any AI environment.
+> This file is mirrored across CLAUDE.md, AGENTS.md, and GEMINI.md so the same instructions load in any AI environment.
 
 You operate within a 3-layer architecture that separates concerns to maximize reliability. LLMs are probabilistic, whereas most business logic is deterministic and requires consistency. This system fixes that mismatch.
 
-\#\# The 3-Layer Architecture
+## Start Here
 
-\*\*Layer 1: Directive (What to do)\*\*  
-\- Basically just SOPs written in Markdown, live in \`directives/\`  
-\- Define the goals, inputs, tools/scripts to use, outputs, and edge cases  
-\- Natural language instructions, like you'd give a mid-level employee
+When you first enter this repo, anchor on the real runtime surfaces before reading broader planning docs.
 
-\*\*Layer 2: Orchestration (Decision making)\*\*  
-\- This is you. Your job: intelligent routing.  
-\- Read directives, call execution tools in the right order, handle errors, ask for clarification, update directives with learnings  
-\- You're the glue between intent and execution. E.g you don't try scraping websites yourself—you read \`directives/scrape\_website.md\` and come up with inputs/outputs and then run \`execution/scrape\_single\_site.py\`
+- App entry: `app.py`
+- Launchers: `run.sh`, `run.bat`, `run_app.bat`
+- Core implementation: `execution/`
+- Workflow directives: `directives/`
+- Regression suite: `tests/`
+- Deliverables and sidecars: `exports/`
 
-\*\*Layer 3: Execution (Doing the work)\*\*  
-\- Deterministic Python scripts in \`execution/\`  
-\- Environment variables, api tokens, etc are stored in \`.env\`  
-\- Handle API calls, data processing, file operations, database interactions  
-\- Reliable, testable, fast. Use scripts instead of manual work. Commented well.
+Use these commands first when you need to run or validate the system:
 
-\*\*Why this works:\*\* if you do everything yourself, errors compound. 90% accuracy per step \= 59% success over 5 steps. The solution is push complexity into deterministic code. That way you just focus on decision-making.
+```bash
+pip install -r requirements.txt
+./run.sh
+pytest
+pytest tests/test_chapter_update_evaluator.py tests/test_research_agent.py tests/test_gemini_client.py tests/test_doc_builder.py
+RUN_LIVE_API_TESTS=1 pytest tests/test_live_single_chapter.py -m live_api
+```
 
-\#\# Operating Principles
+## The 3-Layer Architecture
 
-\*\*1. Check for tools first\*\*  
-Before writing a script, check \`execution/\` per your directive. Only create new scripts if none exist.
+**Layer 1: Directive (What to do)**
+- SOPs in `directives/`
+- Define goals, inputs, tools/scripts to use, outputs, and edge cases
+- Natural-language instructions, like you would give a capable operator
 
-\*\*2. Self-anneal when things break\*\*  
-\- Read error message and stack trace  
-\- Fix the script and test it again (unless it uses paid tokens/credits/etc—in which case you check w user first)  
-\- Update the directive with what you learned (API limits, timing, edge cases)  
-\- Example: you hit an API rate limit → you then look into API → find a batch endpoint that would fix → rewrite script to accommodate → test → update directive.
+**Layer 2: Orchestration (Decision making)**
+- This is you
+- Read directives, route work to the right scripts, handle errors, ask for clarification when inputs are genuinely missing, and keep the workflow moving
+- Prefer using existing repo tools over improvising manual work
 
-\*\*3. Update directives as you learn\*\*  
-Directives are living documents. When you discover API constraints, better approaches, common errors, or timing expectations—update the directive. But don't create or overwrite directives without asking unless explicitly told to. Directives are your instruction set and must be preserved (and improved upon over time, not extemporaneously used and then discarded).
+**Layer 3: Execution (Doing the work)**
+- Deterministic Python modules in `execution/`
+- Handle parsing, LLM calls, research, graph/image generation, export, and validation
+- Environment variables and credentials live in `.env` and ignored local auth files
 
-\#\# Self-annealing loop
+## Runtime Shape
 
-Errors are learning opportunities. When something breaks:  
-1\. Fix it  
-2\. Update the tool  
-3\. Test tool, make sure it works  
-4\. Update directive to include new flow  
-5\. System is now stronger
+The application is a Streamlit state machine in `app.py` with this high-level flow:
 
-\#\# File Organization
+1. Upload and extract source report
+2. Keep or discard source assets
+3. Plan source visual updates
+4. Edit research blueprint per chapter
+5. Generate updated chapter drafts
+6. Review drafts and approve visuals
+7. Assemble final exports
 
-\*\*Deliverables vs Intermediates:\*\*  
-\- \*\*Deliverables\*\*: Google Sheets, Google Slides, or other cloud-based outputs that the user can access  
-\- \*\*Intermediates\*\*: Temporary files needed during processing
+Most business logic is not in the UI widgets themselves. The controlling modules are typically:
 
-\*\*Directory structure:\*\*  
-\- \`.tmp/\` \- All intermediate files (dossiers, scraped data, temp exports). Never commit, always regenerated.  
-\- \`execution/\` \- Python scripts (the deterministic tools)  
-\- \`directives/\` \- SOPs in Markdown (the instruction set)  
-\- \`.env\` \- Environment variables and API keys  
-\- \`credentials.json\`, \`token.json\` \- Google OAuth credentials (required files, in \`.gitignore\`)
+- Parsing: `execution/parse_pdf.py`, `execution/parse_docx.py`
+- Asset analysis: `execution/vision_service.py`
+- Research: `execution/research_agent.py`
+- Writing: `execution/writer_agent.py`
+- Graph generation: `execution/graph_generator.py`
+- Export assembly: `execution/doc_builder.py`
+- Quality checks: `execution/quality_gate.py`
+- Provider routing and usage tracking: `execution/llm_client.py`, `execution/llm_usage.py`
 
-\*\*Key principle:\*\* Local files are only for processing. Deliverables live in cloud services (Google Sheets, Slides, etc.) where the user can access them. Everything in \`.tmp/\` can be deleted and regenerated.
+## Environment and Model Configuration
 
-\#\# Summary
+Default provider behavior is controlled centrally through `execution/llm_client.py`.
 
-You sit between human intent (directives) and deterministic execution (Python scripts). Read instructions, make decisions, call tools, handle errors, continuously improve the system.
+- `LLM_PROVIDER=gemini|openai`
+- `GEMINI_API_KEY` for Gemini
+- `OPENAI_API_KEY` for OpenAI
+- `OPENAI_MODEL` for the default OpenAI model
+- Optional role-specific overrides:
+	- `OPENAI_WRITER_MODEL`
+	- `OPENAI_ANALYZER_MODEL`
+	- `OPENAI_VISION_MODEL`
+	- `OPENAI_RESEARCH_RANKER_MODEL`
+	- `OPENAI_TRANSLATOR_MODEL`
+	- `OPENAI_GRAPH_MODEL`
+	- `OPENAI_CHAPTER_JUDGE_MODEL`
 
-Be pragmatic. Be reliable. Self-anneal.
+Do not bypass `execution/llm_client.py` for app-level provider calls unless there is a very good reason. That module centralizes provider selection, compatibility handling, and usage telemetry.
+
+## Runtime Data Contracts
+
+The app depends heavily on `st.session_state`. Preserve shape compatibility when you change workflow code.
+
+Common chapter fields include:
+
+- `id`
+- `title`
+- `content`
+- `original_full_text`
+- `baseline`
+- `blueprint`
+- `draft_text`
+- `references`
+- `suggested_visuals`
+- `approved_visuals`
+- `graphable_questions`
+- `source_graph_refreshes`
+
+Common asset fields include:
+
+- `id`
+- `type`
+- `path`
+- `short_caption`
+- `description`
+- `analysis`
+- `update_query`
+- `extracted_data_points`
+
+Before changing chapter or asset structures, check downstream consumers in `app.py`, `execution/doc_builder.py`, `execution/quality_gate.py`, and the corresponding tests.
+
+## Operating Principles
+
+**1. Check for tools first**
+- Before writing a new script, inspect `execution/` and the relevant directive
+- Reuse the existing deterministic modules whenever possible
+
+**2. Follow the controlling code path**
+- Start from the concrete runtime surface that owns the behavior
+- In this repo that is often `app.py` for orchestration and one module in `execution/` for the real logic
+
+**3. Self-anneal when things break**
+- Read the actual error and stack trace
+- Fix the script or routing issue
+- Re-run the smallest relevant validation
+- If the change teaches the system something durable, update the directive or instructions when asked
+
+**4. Respect paid and live surfaces**
+- Some tests use network or paid APIs
+- Prefer deterministic tests first
+- Be explicit before running expensive or quota-sensitive live checks unless the user has already asked for them
+
+**5. Keep directives stable**
+- Directives are part of the instruction set, not throwaway notes
+- Improve them when the user asks or when the workflow explicitly calls for directive maintenance
+- Do not casually replace them during unrelated code work
+
+## File and Artifact Conventions
+
+**Intermediates**
+- `.tmp/` is for temporary processing artifacts and regenerated work files
+
+**Deliverables**
+- `exports/` holds report outputs such as `.docx`, `.zip`, usage sidecars, and visual manifests
+
+**Source code**
+- `execution/` contains deterministic implementation code
+- `directives/` contains workflow SOPs
+- `tests/` contains regression coverage and live canaries
+
+When you notice temp or generated files outside `.tmp/` or `exports/`, treat that as repo hygiene debt rather than normal structure.
+
+## Practical Guidance
+
+- Prefer targeted tests in `tests/` over broad manual inspection
+- When changing export behavior, inspect both `execution/doc_builder.py` and `execution/quality_gate.py`
+- When changing provider behavior, inspect `execution/llm_client.py` and the tests around it
+- When changing chapter-generation behavior, inspect `execution/research_agent.py`, `execution/writer_agent.py`, and the state transitions in `app.py`
+- Treat the top-level plan and architecture markdown files as supporting context, not the final source of truth over the code
+
+## Summary
+
+You sit between human intent, repo directives, and deterministic execution modules. Read the closest directive, locate the controlling runtime path, prefer existing tools, validate narrowly, and keep output artifacts and workflow contracts consistent.
 
